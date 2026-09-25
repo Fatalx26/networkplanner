@@ -210,3 +210,9 @@ git push origin v1.1.0
 ```
 
 To run without Docker (Node 18 or newer): `node server.js`, then open http://localhost:8080.
+
+---
+
+## License
+
+[MIT](LICENSE). You're free to use, modify and redistribute this, including commercially, as long as the copyright notice is kept.

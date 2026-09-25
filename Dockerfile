@@ -25,7 +25,8 @@ LABEL org.opencontainers.image.title="Network Planner" \
       org.opencontainers.image.vendor="BigBadNetwork" \
       org.opencontainers.image.url="https://github.com/Fatalx26/networkplanner" \
       org.opencontainers.image.source="https://github.com/Fatalx26/networkplanner" \
-      org.opencontainers.image.documentation="https://github.com/Fatalx26/networkplanner#readme"
+      org.opencontainers.image.documentation="https://github.com/Fatalx26/networkplanner#readme" \
+      org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
 
