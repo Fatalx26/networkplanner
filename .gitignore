@@ -1,0 +1,6 @@
+# Local layout data written when running `node server.js` outside Docker
+data/
+node_modules/
+*.tmp
+.DS_Store
+Thumbs.db

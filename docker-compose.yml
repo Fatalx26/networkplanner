@@ -1,0 +1,24 @@
+# Network Planner — Docker Compose
+#
+#   docker compose up -d        # pulls ghcr.io/fatalx26/networkplanner from Docker Hub and starts it
+#   docker compose pull && docker compose up -d   # upgrade to the latest published image
+#   docker compose up -d --build                  # build from this folder's source instead
+#
+# Then open http://localhost:8080 (or the port set in HOST_PORT).
+services:
+  networkplanner:
+    # Published image. If it can't be pulled, Compose falls back to building
+    # from the Dockerfile in this folder (the "build" key below).
+    image: ghcr.io/fatalx26/networkplanner:latest
+    build: .
+    container_name: networkplanner
+    ports:
+      # Host port is configurable: HOST_PORT=8088 docker compose up -d
+      - "${HOST_PORT:-8080}:8080"
+    volumes:
+      # Named volume holding /data/layout.json (your racks, devices and cables).
+      - networkplanner-data:/data
+    restart: unless-stopped
+
+volumes:
+  networkplanner-data:

@@ -1,0 +1,71 @@
+# Builds the Network Planner Docker image and publishes it to GitHub Container
+# Registry (ghcr.io) so anyone can `docker pull ghcr.io/<owner>/networkplanner`.
+#
+#   push to main        → :latest and :sha-<commit>
+#   push a tag v1.2.3   → :1.2.3, :1.2 and :latest
+#   pull request        → build only (nothing is published)
+#
+# Images are built for linux/amd64 and linux/arm64 (PCs, servers, Raspberry Pi,
+# Apple Silicon). Authentication uses the workflow's built-in GITHUB_TOKEN, so
+# no secrets need to be configured.
+name: Publish Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      # QEMU + Buildx let a single amd64 runner build the arm64 image too.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Works out image name (lower-cased owner/repo) and tags from the git ref.
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=Network Planner
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

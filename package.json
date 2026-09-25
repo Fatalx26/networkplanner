@@ -1,0 +1,13 @@
+{
+  "name": "rack-planner",
+  "version": "1.0.0",
+  "description": "Drag-and-drop server rack diagrams with port-to-port connection tracking",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
