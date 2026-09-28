@@ -111,10 +111,43 @@ Built-in equipment:
 3. Click **either end** of a cable at any time. The cable is highlighted, the **other end pulses** and the view scrolls to it. The inspector shows both ends ("You clicked" / "Other end"), and you can give the cable a label or ID, recolour it or disconnect it.
 4. Hover a connected port to outline its far end without clicking.
 
+### Network settings (VLAN, IP, subnet)
+In the **Connection** panel, each end of the cable that sits on an active device (switch, router, firewall, server and so on) has three fields:
+
+| Field | Examples |
+|---|---|
+| **VLAN** | `10`, a trunk list like `10,20,30-40`, or `trunk` |
+| **IP address** | `10.0.10.21` or `10.0.10.21/24` (IPv6 is accepted too) |
+| **Subnet** | `10.0.10.0/24` or `255.255.255.0` |
+
+- **Patch panel ends** have no fields. They're passive and just pass the cable through.
+- **Checking:** a value that doesn't look valid gets an orange outline, but it's still saved.
+- **Stored per port:** the settings belong to the port, not the cable, so they stay if you disconnect and re-cable it.
+- **Where they show up:** in the port's hover tooltip, in the device panel's connection list and in the CSV export.
+- **Duplicating a device** gives the copy blank port settings, so IP addresses aren't repeated.
+
+### Port details
+Click any port, with or without a cable, to open its panel. The **Details** box takes free text, such as what the port serves, a room or desk number, PoE or a ticket number.
+- Ports with details show a small blue dot in the top-right corner.
+- The text appears in the port's tooltip, the device panel's connection list and the CSV export.
+
+### Patch panel rear connections
+Patch and fibre panel ports have a **Rear connection** box, which records where the permanent cabling behind the panel goes.
+- **To another panel:** pick the panel (in any rack) and the port. Choosing a panel picks the same port number automatically if it's free.
+- **Somewhere outside the plan:** leave the panel as "Not linked" and type a destination, such as `Office 2.14 wall jack`.
+- **Whole panel at once:** click the panel itself, choose the other panel under **Rear connections**, then click **Link ports 1:1**. Port 1 goes to port 1, port 2 to port 2 and so on.
+
+**How rear links show up:**
+- Linked ports have a grey bar along the top.
+- Selecting a linked port or panel draws dashed lines to the far panel.
+- When a cable's route passes through panels, the Connection panel shows a **Full path**, e.g. Switch 1 → Patch Panel A → *rear* → Patch Panel C (Rack B) → Server 9. Everything on that route is highlighted.
+- The CSV export has a **Rear** column for each end.
+- Deleting a panel removes its rear links. Undo brings them back.
+
 The **Cables: All / Selected / Hidden** toggle controls how many cables are drawn, which helps in busy racks.
 
 ### Other features
-- **Overview panel** (click empty space): shows totals and every connection, plus **Download CSV**, a cable schedule with the rack, U, device and port for each end.
+- **Overview panel** (click empty space): shows totals and every connection, plus **Download CSV**, a cable schedule with the rack, U, device, port, VLAN, IP, subnet, rear connection and details for each end.
 - **Export / Import**: back up or restore the whole layout as a JSON file.
 - **Undo**: `Ctrl+Z`, up to 150 steps.
 - **Zoom**: the −/+ buttons, or `Ctrl` + mouse wheel.
@@ -160,8 +193,14 @@ docker cp ./layout-backup.json networkplanner:/data/layout.json && docker restar
     "groups": [         // port groups, in display order
       { "kind": "rj45", "count": 48, "rows": 2, "label": "", "numbering": "oddeven" },
       { "kind": "sfp",  "count": 4,  "rows": 2, "label": "SFP", "numbering": "oddeven" }
-    ]
+    ],
+    "portInfo": {       // per-port settings, keyed "groupIndex:portIndex"
+      "0:0": { "vlan": "10", "ip": "10.0.10.2", "subnet": "10.0.10.0/24", "details": "Uplink to core" }
+    }
   }],
+  "rearLinks": [        // cabling behind two patch/fiber panel ports (port keys)
+    { "a": "dev_pp1:0:0", "b": "dev_pp9:0:0" }
+  ],
   "connections": [{
     "id": "c_z", "color": "#3b82f6", "label": "CAB-0142",
     "a": "dev_y:0:0",   // port key = deviceId:groupIndex:portIndex (0-based)

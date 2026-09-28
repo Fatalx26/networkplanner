@@ -15,13 +15,17 @@
  *
  * DATA MODEL (what is saved in layout.json)
  *   racks[]       { id, name, units }                 units = rack height in U
- *   devices[]     { id, rackId, u, height, name, skin, template, notes, groups[] }
+ *   devices[]     { id, rackId, u, height, name, skin, template, notes, groups[], portInfo }
+ *                   portInfo = { "<groupIndex>:<portIndex>": { vlan, ip, subnet, details, rearNote } }
  *                   u      = lowest rack unit the device occupies (U1 = bottom)
  *                   skin   = visual style (switch, patch, server, …)
  *                   groups = port groups, each { kind, count, rows, label, numbering }
  *                            kind: rj45 | sfp | lc | power
  *                            numbering: 'seq' (left→right) | 'oddeven' (1 top, 2 below)
  *   connections[] { id, a, b, color, label }           a/b are port keys
+ *   rearLinks[]   { a, b }  permanent cabling behind two patch/fiber panel ports
+ *                           (e.g. a trunk to a panel in another rack). A panel
+ *                           port can have one front cable and one rear link.
  *   custom[]      user-defined palette templates (same shape as TEMPLATES)
  *
  *   A PORT KEY is "<deviceId>:<groupIndex>:<portIndex>" (0-based), e.g.
@@ -82,7 +86,7 @@
   // change (device/rack/connection by id, connection by port key, port key →
   // DOM element). `ui` is transient selection/view state that is not saved.
   let state = null;
-  const idx = { dev: new Map(), rack: new Map(), conn: new Map(), byPort: new Map(), portEl: new Map() };
+  const idx = { dev: new Map(), rack: new Map(), conn: new Map(), byPort: new Map(), rear: new Map(), portEl: new Map() };
   const ui = { pending: null, conn: null, origin: null, device: null, peek: null, mode: 'all', color: COLORS[0], zoom: 1 };
   const undoStack = [];
   let drag = null;
@@ -118,6 +122,122 @@
     };
   }
 
+  // Per-port network settings (VLAN / IP / subnet), stored on the device as
+  // dev.portInfo["<groupIndex>:<portIndex>"] = { vlan, ip, subnet }. They belong
+  // to the port, not the cable, so they survive re-cabling. Patch/fiber panels
+  // are passive and don't get these fields.
+  const NET_FIELDS = [
+    { f: 'vlan', label: 'VLAN', ph: '10  or  10,20,30-40' },
+    { f: 'ip', label: 'IP address', ph: '10.0.10.21  or  10.0.10.21/24' },
+    { f: 'subnet', label: 'Subnet', ph: '10.0.10.0/24  or  255.255.255.0', wide: true },
+  ];
+  const isPassive = (dev) => !!dev && (dev.skin === 'patch' || dev.skin === 'fiber');
+  function portInfo(key) {
+    const { devId, gi, pi } = parseKey(key);
+    return idx.dev.get(devId)?.portInfo?.[`${gi}:${pi}`] || {};
+  }
+  function netSummary(key) {
+    const i = portInfo(key);
+    return [i.vlan && `VLAN ${i.vlan}`, i.ip, i.subnet].filter(Boolean).join(' · ');
+  }
+  function setPortInfo(key, field, value) {
+    const { devId, gi, pi } = parseKey(key);
+    const dev = idx.dev.get(devId);
+    if (!dev) return;
+    const k = `${gi}:${pi}`;
+    const info = { ...(dev.portInfo?.[k] || {}), [field]: value.trim() };
+    if (!info[field]) delete info[field];
+    dev.portInfo = { ...(dev.portInfo || {}) };
+    if (Object.keys(info).length) dev.portInfo[k] = info; else delete dev.portInfo[k];
+  }
+
+  // Soft validation: bad values get an orange outline but are still saved.
+  // IPv6 values (containing ":") are accepted as typed.
+  const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+  function netValid(field, raw) {
+    const v = String(raw || '').trim();
+    if (!v) return true;
+    if (field === 'vlan') {
+      if (/^(trunk|all|native)$/i.test(v)) return true;
+      return /^\d+(-\d+)?(,\d+(-\d+)?)*$/.test(v.replace(/\s+/g, '')) && v.match(/\d+/g).every((n) => +n >= 1 && +n <= 4094);
+    }
+    if (v.includes(':')) return true;
+    const [addr, prefix, extra] = v.split('/');
+    if (extra !== undefined || !IPV4.test(addr)) return false;
+    return prefix === undefined || (/^\d+$/.test(prefix) && +prefix <= 32);
+  }
+
+  // All port keys of a device in display order (group by group), and a port's
+  // position in that list. Used for 1:1 rear trunks between panels.
+  const allKeys = (dev) => dev.groups.flatMap((g, gi) => Array.from({ length: g.count }, (_, pi) => portKey(dev.id, gi, pi)));
+  function flatIndex(key) {
+    const { devId, gi, pi } = parseKey(key);
+    const dev = idx.dev.get(devId);
+    return dev ? dev.groups.slice(0, gi).reduce((n, g) => n + g.count, 0) + pi : -1;
+  }
+  const passiveDevices = (exceptId) => state.devices.filter((d) => isPassive(d) && d.id !== exceptId)
+    .sort((a, b) => (idx.rack.get(a.rackId)?.name || '').localeCompare(idx.rack.get(b.rackId)?.name || '') || b.u - a.u);
+  const shorten = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+  // Rear links: link `key` to `other` (or unlink it when other is null). Any
+  // older rear link on either port is replaced. Call inside commit().
+  function setRear(key, other) {
+    state.rearLinks = state.rearLinks.filter((l) => l.a !== key && l.b !== key && (!other || (l.a !== other && l.b !== other)));
+    if (!other) return;
+    state.rearLinks.push({ a: key, b: other });
+    setPortInfo(key, 'rearNote', '');
+    setPortInfo(other, 'rearNote', '');
+  }
+  function removeDeviceRear(devId) {
+    state.rearLinks = state.rearLinks.filter((l) => parseKey(l.a).devId !== devId && parseKey(l.b).devId !== devId);
+  }
+  function rearText(key) {
+    const r = idx.rear.get(key);
+    if (r) { const p = describePort(r); return `${p.text} (${p.loc})`; }
+    return portInfo(key).rearNote || '';
+  }
+
+  // Follow a cable outward through patch panels: from each end, hop across the
+  // panel's rear link, then along whatever front cable is on the far panel, and
+  // so on. Returns the ordered path; seq[i].via is the link between seq[i-1]
+  // and seq[i] ('cable' or 'rear'). A rear note ends the path off-plan.
+  function tracePath(c) {
+    const seen = new Set([c.a, c.b]);
+    const walk = (start) => {
+      const out = [];
+      let p = start;
+      for (;;) {
+        const r = idx.rear.get(p);
+        if (!r) { const note = portInfo(p).rearNote; if (note && isPassive(idx.dev.get(parseKey(p).devId))) out.push({ via: 'rear', note }); break; }
+        if (seen.has(r)) break;
+        seen.add(r); out.push({ via: 'rear', key: r });
+        const cc = idx.byPort.get(r);
+        if (!cc) break;
+        const nxt = otherEnd(cc, r);
+        if (seen.has(nxt)) break;
+        seen.add(nxt); out.push({ via: 'cable', key: nxt, conn: cc });
+        p = nxt;
+      }
+      return out;
+    };
+    const near = ui.origin === c.b ? c.b : c.a;
+    const far = otherEnd(c, near);
+    const L = walk(near);
+    const R = walk(far);
+    const seq = [];
+    for (let j = L.length - 1; j >= 0; j--) {
+      const next = L[j + 1];
+      seq.push({ key: L[j].key, note: L[j].note, via: next ? next.via : null, conn: next?.conn });
+    }
+    seq.push({ key: near, via: L[0]?.via || null, conn: L[0]?.conn });
+    seq.push({ key: far, via: 'cable', conn: c });
+    seq.push(...R);
+    const conns = new Set(seq.filter((s) => s.via === 'cable').map((s) => s.conn.id));
+    const rears = [];
+    seq.forEach((s, i) => { if (s.via === 'rear' && s.key && seq[i - 1]?.key) rears.push([seq[i - 1].key, s.key]); });
+    return { seq, conns, rears, extended: L.length + R.length > 0 };
+  }
+
   function newDevice(tpl, rackId, u) {
     const n = state.devices.filter((d) => d.template === tpl.type).length + 1;
     const base = tpl.base || tpl.name;
@@ -126,7 +246,7 @@
 
   function defaultState() {
     const rackId = uid('rack');
-    state = { version: 1, racks: [{ id: rackId, name: 'Rack A', units: 42 }], devices: [], connections: [], custom: [] };
+    state = { version: 1, racks: [{ id: rackId, name: 'Rack A', units: 42 }], devices: [], connections: [], rearLinks: [], custom: [] };
     const place = (type, u, name) => { const d = newDevice(findTpl(type), rackId, u); d.name = name; state.devices.push(d); };
     place('patch24', 42, 'Patch Panel A');
     place('cm1', 41, 'Cable Manager');
@@ -157,6 +277,7 @@
     for (const d of Array.isArray(s.devices) ? s.devices : []) {
       if (!d || !d.id || !rackIds.has(d.rackId) || !Array.isArray(d.groups)) continue;
       const dev = { ...d, height: clamp(parseInt(d.height, 10) || 1, 1, 100), u: Math.max(1, parseInt(d.u, 10) || 1) };
+      dev.portInfo = d.portInfo && typeof d.portInfo === 'object' && !Array.isArray(d.portInfo) ? d.portInfo : {};
       out.devices.push(dev);
       devs.set(dev.id, dev);
     }
@@ -172,6 +293,20 @@
       used.add(c.a); used.add(c.b);
       out.connections.push({ id: c.id || uid('c'), a: c.a, b: c.b, color: c.color || COLORS[0], label: c.label || '' });
     }
+    // Rear links: only between ports of two different patch/fiber panels, one per port.
+    const rearUsed = new Set();
+    const panelPort = (k) => {
+      if (typeof k !== 'string' || rearUsed.has(k)) return false;
+      const { devId, gi, pi } = parseKey(k);
+      const d = devs.get(devId);
+      return isPassive(d) && d.groups[gi] && pi >= 0 && pi < d.groups[gi].count;
+    };
+    out.rearLinks = [];
+    for (const l of Array.isArray(s.rearLinks) ? s.rearLinks : []) {
+      if (!l || !panelPort(l.a) || !panelPort(l.b) || parseKey(l.a).devId === parseKey(l.b).devId) continue;
+      rearUsed.add(l.a); rearUsed.add(l.b);
+      out.rearLinks.push({ a: l.a, b: l.b });
+    }
     return out;
   }
 
@@ -181,6 +316,9 @@
     idx.conn = new Map(state.connections.map((c) => [c.id, c]));
     idx.byPort = new Map();
     for (const c of state.connections) { idx.byPort.set(c.a, c); idx.byPort.set(c.b, c); }
+    state.rearLinks = state.rearLinks || [];
+    idx.rear = new Map();
+    for (const l of state.rearLinks) { idx.rear.set(l.a, l.b); idx.rear.set(l.b, l.a); }
     if (ui.conn && !idx.conn.has(ui.conn)) { ui.conn = null; ui.origin = null; }
     if (ui.device && !idx.dev.has(ui.device)) ui.device = null;
     if (ui.pending && !idx.dev.has(parseKey(ui.pending).devId)) ui.pending = null;
@@ -317,8 +455,14 @@
         style += `;--c:${conn.color}`;
         title += `\n⇄ ${describePort(otherEnd(conn, key)).text}${conn.label ? `\n“${conn.label}”` : ''}`;
       } else {
-        title += '\nClick to start a connection';
+        title += '\nClick to select it or start a cable';
       }
+      const net = netSummary(key);
+      if (net) title += `\n${net}`;
+      const rear = rearText(key);
+      if (rear) { title += `\nRear → ${rear}`; cls += ' has-rear'; }
+      const details = portInfo(key).details;
+      if (details) { title += `\n${shorten(details, 200)}`; cls += ' has-note'; }
       cells += `<div class="${cls}" data-p="${key}" style="${style}" title="${esc(title)}">${i + 1}</div>`;
     }
     const showLabel = g.label && (rows === 1 || dev.height > 1);
@@ -385,24 +529,42 @@
 
   // Apply selection classes (pending port, highlighted cable ends, selected
   // device) without rebuilding the racks, then redraw cables and the inspector.
+  // hlConns / hlRears: cables and rear links on the highlighted path, used by drawCables().
   let marked = [];
+  let hlConns = new Set();
+  let hlRears = [];
   function updateHighlights(opts = {}) {
     for (const [el, cls] of marked) el.classList.remove(...cls);
     marked = [];
+    hlConns = new Set();
+    hlRears = [];
     const mark = (el, ...cls) => { if (el) { el.classList.add(...cls); marked.push([el, cls]); } };
     const devEl = (id) => document.querySelector(`.device[data-dev="${id}"]`);
 
-    if (ui.pending) mark(idx.portEl.get(ui.pending), 'pending');
+    if (ui.pending) {
+      mark(idx.portEl.get(ui.pending), 'pending');
+      const r = idx.rear.get(ui.pending);
+      if (r) { mark(idx.portEl.get(r), 'hl-rear'); mark(devEl(parseKey(r).devId), 'hl-dev'); hlRears.push([ui.pending, r]); }
+    }
     const c = ui.conn && idx.conn.get(ui.conn);
     if (c) {
-      const far = ui.origin === c.a ? c.b : c.a;
-      mark(idx.portEl.get(c.a), 'hl');
-      mark(idx.portEl.get(c.b), 'hl');
-      mark(idx.portEl.get(far), 'hl-far');
-      mark(devEl(parseKey(c.a).devId), 'hl-dev');
-      mark(devEl(parseKey(c.b).devId), 'hl-dev');
+      // Highlight the whole path, including hops through patch panel rear links.
+      const path = tracePath(c);
+      hlConns = path.conns;
+      hlRears = path.rears;
+      for (const s of path.seq) {
+        if (!s.key) continue;
+        mark(idx.portEl.get(s.key), 'hl');
+        mark(devEl(parseKey(s.key).devId), 'hl-dev');
+      }
+      mark(idx.portEl.get(ui.origin === c.a ? c.b : c.a), 'hl-far');
     }
-    if (ui.device) mark(devEl(ui.device), 'selected');
+    if (ui.device) {
+      mark(devEl(ui.device), 'selected');
+      // A selected panel shows where its rear links go.
+      const dev = idx.dev.get(ui.device);
+      if (isPassive(dev)) hlRears = state.rearLinks.filter((l) => parseKey(l.a).devId === dev.id || parseKey(l.b).devId === dev.id).map((l) => [l.a, l.b]);
+    }
     requestAnimationFrame(drawCables);
     if (opts.inspector !== false) renderInspector();
   }
@@ -423,7 +585,7 @@
     let normal = '';
     let top = '';
     for (const c of state.connections) {
-      const hl = c.id === ui.conn;
+      const hl = hlConns.has(c.id);
       if (ui.mode === 'selected' && !hl) continue;
       const ea = idx.portEl.get(c.a);
       const eb = idx.portEl.get(c.b);
@@ -436,6 +598,19 @@
       const g = `<g class="${cls}"><path class="cable-shadow" d="${d}"/><path class="cable" d="${d}" stroke="${esc(c.color)}"/>` +
         `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${esc(c.color)}"/><circle cx="${q.x}" cy="${q.y}" r="3" fill="${esc(c.color)}"/></g>`;
       if (hl) top += g; else normal += g;
+    }
+    // Rear links are only drawn for the current selection, as dashed lines that
+    // arch upward so they don't read as front patch cables.
+    for (const [a, b] of hlRears) {
+      const ea = idx.portEl.get(a);
+      const eb = idx.portEl.get(b);
+      if (!ea || !eb) continue;
+      const p = center(ea);
+      const q = center(eb);
+      const lift = 26 + Math.min(160, (Math.abs(q.x - p.x) + Math.abs(q.y - p.y)) * 0.18);
+      const up = (y) => Math.max(6, y - lift).toFixed(1); // keep the arch inside the canvas
+      const d = `M${p.x.toFixed(1)},${p.y.toFixed(1)} C${p.x.toFixed(1)},${up(p.y)} ${q.x.toFixed(1)},${up(q.y)} ${q.x.toFixed(1)},${q.y.toFixed(1)}`;
+      top += `<g class="rear-g"><path class="cable-shadow" d="${d}"/><path class="rear-link" d="${d}"/></g>`;
     }
     svg.innerHTML = normal + top;
   }
@@ -462,8 +637,78 @@
   function connRow(c, fromKey) {
     const here = describePort(fromKey);
     const there = describePort(otherEnd(c, fromKey));
+    const extra = [netSummary(fromKey), portInfo(fromKey).details && shorten(portInfo(fromKey).details.replace(/\s+/g, ' '), 60)].filter(Boolean).join(' · ');
     return `<li data-conn="${c.id}" data-origin="${fromKey}" style="--c:${esc(c.color)}"><span class="dot"></span>
-      <span><b>${esc(here.port)}</b> <span class="arrow">→</span> ${esc(there.text)}${c.label ? ` <span class="muted">“${esc(c.label)}”</span>` : ''}</span></li>`;
+      <span><b>${esc(here.port)}</b> <span class="arrow">→</span> ${esc(there.text)}${c.label ? ` <span class="muted">“${esc(c.label)}”</span>` : ''}${extra ? `<br><span class="muted">${esc(extra)}</span>` : ''}</span></li>`;
+  }
+
+  // Editable settings for one port: network fields (active devices), rear
+  // connection (patch/fiber panels) and free-text details (every port).
+  function portFieldsHTML(key) {
+    const p = describePort(key);
+    const info = portInfo(key);
+    const passive = isPassive(p.dev);
+    const net = passive ? '' : `<div class="netinfo">${NET_FIELDS.map((n) => `<label class="field${n.wide ? ' wide' : ''}">${n.label}
+      <input data-pf="${n.f}" data-port="${key}" value="${esc(info[n.f])}" placeholder="${esc(n.ph)}" spellcheck="false" autocomplete="off"
+        class="${netValid(n.f, info[n.f]) ? '' : 'warn'}"></label>`).join('')}</div>`;
+    return `<div class="portfields">${net}${passive ? rearHTML(key) : ''}
+      <label class="field">Details<textarea data-pf="details" data-port="${key}" rows="2"
+        placeholder="Anything worth noting: what it serves, room / desk, PoE, ticket…">${esc(info.details)}</textarea></label></div>`;
+  }
+
+  function rearHTML(key) {
+    const cur = idx.rear.get(key);
+    const curDev = cur && idx.dev.get(parseKey(cur).devId);
+    const panels = passiveDevices(parseKey(key).devId);
+    const devOpts = panels.length
+      ? `<option value="">Not linked to a panel</option>${panels.map((d) => `<option value="${d.id}"${curDev?.id === d.id ? ' selected' : ''}>${esc(d.name)} · ${esc(idx.rack.get(d.rackId)?.name)} U${d.u}</option>`).join('')}`
+      : '<option value="">No other patch panels yet</option>';
+    const portSel = curDev ? `<select data-rear-port data-port="${key}">${allKeys(curDev).map((k) => {
+      const busy = idx.rear.has(k) && k !== cur;
+      const { gi, pi } = parseKey(k);
+      return `<option value="${k}"${k === cur ? ' selected' : ''}${busy ? ' disabled' : ''}>${esc(portLabel(curDev, gi, pi))}${busy ? ' (used)' : ''}</option>`;
+    }).join('')}</select>` : '';
+    let dest = '';
+    if (cur) {
+      const d = describePort(cur);
+      const front = idx.byPort.get(cur);
+      dest = `<div class="rear-dest" data-goto-any="${cur}" title="Click to show it">→ <b>${esc(d.text)}</b>
+        <span>${esc(d.loc)} · front: ${front ? esc(describePort(otherEnd(front, cur)).text) : 'nothing plugged in'}</span></div>`;
+    }
+    return `<div class="rear"><div class="sub">Rear connection</div>
+      <div class="rear-pick"><select data-rear-dev data-port="${key}"${panels.length ? '' : ' disabled'}>${devOpts}</select>${portSel}</div>${dest}
+      ${cur ? '' : `<label class="field">Or goes to (not in this plan)<input data-pf="rearNote" data-port="${key}" value="${esc(portInfo(key).rearNote)}"
+        placeholder="e.g. Office 2.14 wall jack" autocomplete="off"></label>`}</div>`;
+  }
+
+  // The full end-to-end path of a cable when it passes through panel rear links.
+  function pathHTML(seq) {
+    return `<h4>Full path</h4><ol class="path">${seq.map((s) => {
+      const link = s.via === 'rear' ? '<li class="hop rear"><i></i>rear (structured cabling)</li>'
+        : s.via === 'cable' ? `<li class="hop" style="--c:${esc(s.conn.color)}"><i></i>${esc(s.conn.label || 'patch cable')}</li>` : '';
+      if (!s.key) return `${link}<li class="node off"><b>${esc(s.note)}</b><span>not in this plan</span></li>`;
+      const p = describePort(s.key);
+      return `${link}<li class="node" data-goto-any="${s.key}" title="Click to show it"><b>${esc(p.dev?.name)}</b> · ${esc(p.port)}<span>${esc(p.loc)}</span></li>`;
+    }).join('')}</ol>`;
+  }
+
+  function rearSummaryHTML(dev) {
+    const keys = allKeys(dev);
+    const linked = keys.filter((k) => idx.rear.has(k));
+    const targets = new Map();
+    for (const k of linked) {
+      const t = idx.dev.get(parseKey(idx.rear.get(k)).devId);
+      const label = `${t.name} (${idx.rack.get(t.rackId)?.name})`;
+      targets.set(label, (targets.get(label) || 0) + 1);
+    }
+    const panels = passiveDevices(dev.id);
+    return `<h4>Rear connections</h4>
+      <p>${linked.length} of ${keys.length} ports linked at the rear${targets.size ? `: ${[...targets].map(([t, n]) => `${esc(t)} ×${n}`).join(', ')}` : ''}.</p>
+      ${panels.length ? `<div class="trunk"><select data-trunk-dev>${panels.map((d) => `<option value="${d.id}">${esc(d.name)} · ${esc(idx.rack.get(d.rackId)?.name)} U${d.u}</option>`).join('')}</select>
+        <button class="btn small" data-act="trunk">Link ports 1:1</button></div>
+        <p class="hint">Links port 1 to port 1, 2 to 2 and so on, replacing existing rear links on those ports. Set single ports by clicking them.</p>`
+        : '<p class="hint">Add another patch panel (in any rack) to link this one to it.</p>'}
+      ${linked.length ? '<div class="row"><button class="btn small" data-act="rear-clear">Clear rear links</button></div>' : ''}`;
   }
 
   // Right-hand panel. Shows, in priority order: the pending port while a cable
@@ -475,9 +720,11 @@
 
     if (ui.pending) {
       const p = describePort(ui.pending);
-      el.innerHTML = `<div class="insp"><h3>Connecting…</h3>
-        <div class="endpoint"><div class="ep-tag">From</div><div class="ep-dev">${esc(p.dev?.name)}</div><div class="ep-port">${esc(p.port)}</div><div class="ep-loc">${esc(p.loc)}</div></div>
-        <p style="margin-top:12px">Now click the port at the other end of the cable. It can be in any rack.</p>
+      el.innerHTML = `<div class="insp"><h3>Port</h3>
+        <div class="endpoint"><div class="ep-tag">Selected · no cable</div><div class="ep-dev">${esc(p.dev?.name)}</div><div class="ep-port">${esc(p.port)}</div><div class="ep-loc">${esc(p.loc)}</div></div>
+        ${portFieldsHTML(ui.pending)}
+        <h4>Add a cable</h4>
+        <p>Click the port at the other end of the cable. It can be in any rack.</p>
         <p>Press <kbd>Esc</kbd> or click the same port again to cancel.</p>
         <div class="field">Cable color<div class="swatches">${swatchesHTML(ui.color, 'data-newcolor')}</div></div></div>`;
       return;
@@ -492,10 +739,12 @@
           <div class="ep-tag">${far ? 'Other end' : 'You clicked'}</div>
           <div class="ep-dev">${esc(p.dev?.name)}</div><div class="ep-port">${esc(p.port)}</div><div class="ep-loc">${esc(p.loc)}</div></div>`;
       };
+      const path = tracePath(c);
       el.innerHTML = `<div class="insp" data-scope="conn"><h3>Connection</h3>
-        ${ep(nearKey, false)}
+        ${path.extended ? pathHTML(path.seq) : ''}
+        ${ep(nearKey, false)}${portFieldsHTML(nearKey)}
         <div class="link-line" style="--c:${esc(c.color)}"><i></i>${c.label ? esc(c.label) : 'cable'}</div>
-        ${ep(farKey, true)}
+        ${ep(farKey, true)}${portFieldsHTML(farKey)}
         <div style="height:14px"></div>
         <label class="field">Cable label / ID<input data-f="label" value="${esc(c.label)}" placeholder="e.g. CAB-0142"></label>
         <div class="field">Color<div class="swatches">${swatchesHTML(c.color, 'data-conncolor')}</div></div>
@@ -521,6 +770,7 @@
             <input type="number" min="1" max="${Math.min(dev.height * 2, g.count)}" value="${clamp(g.rows || 1, 1, dev.height * 2)}" data-grows="${gi}" title="Max ${dev.height * 2} rows for a ${dev.height}U device">
             <select data-gnum="${gi}"><option value="seq"${g.numbering !== 'oddeven' ? ' selected' : ''}>Left → right</option><option value="oddeven"${g.numbering === 'oddeven' ? ' selected' : ''}>Odd top / even bottom</option></select>`).join('')}
         </div>` : ''}
+        ${isPassive(dev) ? rearSummaryHTML(dev) : ''}
         <h4>Connections</h4>
         ${conns.length ? `<ul class="conn-list">${conns.join('')}</ul>` : '<p>No ports connected yet.</p>'}
         <div class="row">
@@ -543,6 +793,7 @@
         <li>Drag equipment from the left into a rack. Drag a device to move it, even to another rack.</li>
         <li>Click a port, then click another port to connect them with a cable.</li>
         <li>Click any connected port to highlight the other end.</li>
+        <li>Click any port to add details. On a patch panel you can also set where its rear goes, even to another rack.</li>
         <li>Click a device body to rename it, add notes or delete it.</li>
       </ol>
       <p><kbd>Esc</kbd> clear selection · <kbd>Del</kbd> delete selected · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+scroll zoom</p>
@@ -585,7 +836,7 @@
   }
 
   function deleteDevice(id) {
-    commit(() => { removeDeviceConns(id); state.devices = state.devices.filter((d) => d.id !== id); });
+    commit(() => { removeDeviceConns(id); removeDeviceRear(id); state.devices = state.devices.filter((d) => d.id !== id); });
   }
 
   function addFromTemplate(tpl, rackId, u) {
@@ -636,7 +887,7 @@
     const n = state.devices.filter((d) => d.rackId === id).length;
     if (!confirm(`Delete "${rack.name}"${n ? ` and its ${n} device(s) and their cables` : ''}?`)) return;
     commit(() => {
-      state.devices.filter((d) => d.rackId === id).forEach((d) => removeDeviceConns(d.id));
+      state.devices.filter((d) => d.rackId === id).forEach((d) => { removeDeviceConns(d.id); removeDeviceRear(d.id); });
       state.devices = state.devices.filter((d) => d.rackId !== id);
       state.racks = state.racks.filter((r) => r.id !== id);
     });
@@ -684,11 +935,15 @@
 
   function exportCSV() {
     const q = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
-    const rows = [['Cable', 'Color', 'A Rack', 'A U', 'A Device', 'A Port', 'B Rack', 'B U', 'B Device', 'B Port']];
+    const side = (s) => [`${s} Rack`, `${s} U`, `${s} Device`, `${s} Port`, `${s} VLAN`, `${s} IP`, `${s} Subnet`, `${s} Rear`, `${s} Details`];
+    const rows = [['Cable', 'Color', ...side('A'), ...side('B')]];
+    const cells = (key) => {
+      const p = describePort(key);
+      const i = portInfo(key);
+      return [idx.rack.get(p.dev?.rackId)?.name, p.dev?.u, p.dev?.name, p.port, i.vlan, i.ip, i.subnet, rearText(key), i.details];
+    };
     for (const c of state.connections) {
-      const a = describePort(c.a);
-      const b = describePort(c.b);
-      rows.push([c.label, c.color, idx.rack.get(a.dev?.rackId)?.name, a.dev?.u, a.dev?.name, a.port, idx.rack.get(b.dev?.rackId)?.name, b.dev?.u, b.dev?.name, b.port]);
+      rows.push([c.label, c.color, ...cells(c.a), ...cells(c.b)]);
     }
     download('rack-connections.csv', rows.map((r) => r.map(q).join(',')).join('\r\n'), 'text/csv');
   }
@@ -878,8 +1133,20 @@
 
     // Inspector
     const insp = $('#inspector');
-    insp.addEventListener('focusin', (e) => { if (e.target.matches('[data-f]')) editing = false; });
+    insp.addEventListener('focusin', (e) => { if (e.target.matches('[data-f], [data-pf]')) editing = false; });
     insp.addEventListener('input', (e) => {
+      const pf = e.target.dataset.pf;
+      if (pf) {
+        if (!editing) { pushUndo(); editing = true; }
+        setPortInfo(e.target.dataset.port, pf, e.target.value);
+        if (NET_FIELDS.some((n) => n.f === pf)) {
+          e.target.classList.toggle('warn', !netValid(pf, e.target.value));
+          e.target.title = netValid(pf, e.target.value) ? '' : `This doesn't look like a valid ${pf === 'vlan' ? 'VLAN list (1–4094)' : 'IPv4 address'}; it is saved anyway.`;
+        }
+        renderRacks({ inspector: false });
+        scheduleSave();
+        return;
+      }
       const f = e.target.dataset.f;
       if (!f) return;
       if (!editing) { pushUndo(); editing = true; }
@@ -891,6 +1158,22 @@
     });
     // Port-group layout edits (rows / numbering) — port identities are unchanged, so cables survive
     insp.addEventListener('change', (e) => {
+      // Rear connection pickers. Choosing a panel links to the same port
+      // number on it if that's free, otherwise its first free port.
+      const ds = e.target.dataset;
+      if ('rearDev' in ds) {
+        const key = ds.port;
+        const target = idx.dev.get(e.target.value);
+        if (!target) { commit(() => setRear(key, null)); return; }
+        const keys = allKeys(target);
+        const free = (k) => !idx.rear.has(k);
+        const same = keys[flatIndex(key)];
+        const pick = same && free(same) ? same : keys.find(free);
+        if (!pick) { alert(`Every port on ${target.name} is already linked at the rear.`); renderInspector(); return; }
+        commit(() => setRear(key, pick));
+        return;
+      }
+      if ('rearPort' in ds) { commit(() => setRear(ds.port, e.target.value)); return; }
       const dev = ui.device && idx.dev.get(ui.device);
       if (!dev) return;
       const rowsGi = e.target.dataset.grows;
@@ -913,12 +1196,26 @@
         const src = idx.dev.get(ui.device);
         const slot = findFreeSlot(src.height, src.rackId);
         if (!slot) { alert(`No free ${src.height}U space available.`); return; }
-        const copy = { ...clone(src), id: uid('dev'), rackId: slot.rack.id, u: slot.u, name: `${src.name} (copy)` };
+        // IPs must be unique, so a duplicate starts with no network settings.
+        const copy = { ...clone(src), id: uid('dev'), rackId: slot.rack.id, u: slot.u, name: `${src.name} (copy)`, portInfo: {} };
         ui.device = copy.id;
         commit(() => state.devices.push(copy));
         return;
       }
       if (act === 'csv') { exportCSV(); return; }
+      if (act === 'trunk' && ui.device) {
+        const src = idx.dev.get(ui.device);
+        const dst = idx.dev.get(insp.querySelector('[data-trunk-dev]')?.value);
+        if (!dst) return;
+        const A = allKeys(src);
+        const B = allKeys(dst);
+        commit(() => { for (let i = 0; i < Math.min(A.length, B.length); i++) setRear(A[i], B[i]); });
+        return;
+      }
+      if (act === 'rear-clear' && ui.device) { const id = ui.device; commit(() => removeDeviceRear(id)); return; }
+
+      const ga = e.target.closest('[data-goto-any]');
+      if (ga) { scrollToPort(ga.dataset.gotoAny); setPeek(ga.dataset.gotoAny); return; }
 
       const sw = e.target.closest('[data-conncolor]');
       if (sw && c) { commit(() => { c.color = sw.dataset.conncolor; }); return; }
