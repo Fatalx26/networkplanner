@@ -40,6 +40,11 @@
       <label class="btn" title="Build a new rack from a CSV cable sheet">Import CSV<input type="file" id="file-csv" accept=".csv,.txt,text/csv" hidden></label>
     </div>
     <button id="loop-alert" class="loop-alert" hidden title="Show the network loops"></button>
+    <!-- Google Drive sync; only shown when the server has GOOGLE_CLIENT_ID set -->
+    <div id="drive" class="drive" hidden>
+      <button id="drive-btn" class="drive-btn" aria-haspopup="menu" aria-expanded="false"></button>
+      <div id="drive-menu" class="drive-menu" role="menu" hidden></div>
+    </div>
     <div id="save-status" class="save-status">Loading…</div>
     <button id="toggle-right" class="btn panel-toggle" aria-pressed="true" aria-controls="inspector">
       <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect class="pane" x="12" y="4" width="5" height="12" rx="1"/></svg>

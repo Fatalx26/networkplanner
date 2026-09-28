@@ -12,10 +12,14 @@
  *        PUT  /api/layout   → replaces the saved layout with the request body
  *      The file lives at $DATA_DIR/layout.json (/data in Docker = a volume).
  *   3. Answers GET /healthz with "ok" for the Docker HEALTHCHECK.
+ *   4. GET /api/config tells the browser optional settings (the Google OAuth
+ *      client ID that turns on "Sign in with Google" / Drive sync).
  *
  * Environment variables:
- *   PORT      port to listen on            (default 8080)
- *   DATA_DIR  folder for layout.json       (default ./data, /data in Docker)
+ *   PORT              port to listen on        (default 8080)
+ *   DATA_DIR          folder for layout.json   (default ./data, /data in Docker)
+ *   GOOGLE_CLIENT_ID  OAuth client ID for Google Drive sync (optional; the
+ *                     feature is hidden without it). It is public, not a secret.
  *
  * There is no authentication: anyone who can reach the port can view and edit
  * the layout. Put it behind a reverse proxy with auth if exposing it widely.
@@ -29,6 +33,10 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'layout.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_BODY = 20 * 1024 * 1024; // reject layouts larger than 20 MB
+// Only accept something shaped like a Google client ID, so a typo can't inject
+// anything into the page.
+const GOOGLE_CLIENT_ID = /^[\w.-]+\.apps\.googleusercontent\.com$/.test(process.env.GOOGLE_CLIENT_ID || '')
+  ? process.env.GOOGLE_CLIENT_ID : '';
 
 // Content-Type for each static file extension we serve.
 const TYPES = {
@@ -108,8 +116,10 @@ function serveStatic(pathname, res) {
 http.createServer((req, res) => {
   const { pathname } = new URL(req.url, 'http://localhost');
   if (pathname === '/api/layout') return handleLayout(req, res);
+  if (pathname === '/api/config') return send(res, 200, JSON.stringify({ googleClientId: GOOGLE_CLIENT_ID }), TYPES['.json']);
   if (pathname === '/healthz') return send(res, 200, 'ok');
   serveStatic(pathname, res);
 }).listen(PORT, () => {
   console.log(`Network Planner listening on http://0.0.0.0:${PORT} (data: ${DATA_FILE})`);
+  console.log(GOOGLE_CLIENT_ID ? 'Google Drive sync: enabled' : `Google Drive sync: off${process.env.GOOGLE_CLIENT_ID ? ' (GOOGLE_CLIENT_ID does not look like a client ID)' : ''}`);
 });

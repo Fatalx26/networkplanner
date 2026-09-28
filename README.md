@@ -20,6 +20,7 @@ It runs in a single small container, saves automatically, and needs no database.
 - **Patch panel rear connections:** record where the permanent cabling behind a panel goes, to another panel in any rack or to a wall jack or room. The app then shows the **full path** of a cable through the panels.
 - **CSV import:** build a whole rack, with its devices and cables, from a spreadsheet that lists patch panel ports, switch ports and the devices in rack order.
 - **Documentation output:** download a CSV cable schedule, or export and import the whole layout as JSON.
+- **Google Drive sync:** sign in with a Gmail account to save your network to Google Drive and open it on another device. This is optional and needs a one-time setup.
 - **Workspace:** hide either side panel with a toolbar button (or `[` / `]`) to give the racks more room.
 - **Everyday use:** undo, zoom and keyboard shortcuts, with autosave to the server.
 
@@ -86,12 +87,63 @@ With Compose: `docker compose pull && docker compose up -d`.
 |---|---|---|
 | `PORT` (env) | `8080` | Port the server listens on inside the container. |
 | `DATA_DIR` (env) | `/data` | Folder where `layout.json` is stored. |
+| `GOOGLE_CLIENT_ID` (env) | *(empty)* | Turns on **Sign in with Google** and Google Drive sync. See [Saving to Google Drive](#saving-to-google-drive). It's a public ID, not a secret. |
 | `/data` (volume) | — | Persist this. It holds everything you've drawn. |
 | `8080/tcp` (port) | — | Web UI and API. |
 
 The container runs as the unprivileged `node` user and includes a `HEALTHCHECK` against `/healthz`.
 
 > **Security:** the app has **no login**. Anyone who can reach the port can view and edit the layout. Keep it on a trusted network, or put it behind a reverse proxy that handles authentication (Traefik, Nginx Proxy Manager, Caddy, Authelia and so on). It works under a sub-path such as `/planner/` because it only uses relative URLs.
+
+---
+
+## Saving to Google Drive
+
+With Drive sync turned on, a **Sign in with Google** button appears in the toolbar. Sign in with any Google (Gmail) account, and your layout is saved to your Google Drive. Sign in on another device with the same account, and your network opens there too.
+
+![The Google Drive menu: the signed-in account, the synced file, Save now, Check for changes, Show the file in Google Drive and Sign out](docs/screenshots/drive-menu.png)
+
+### How it works
+- **Signing in** happens in Google's own window. Network Planner never sees your password.
+- **Minimum permission:** the app asks only for Google's *drive.file* permission, which means it can see **only the one file it creates**: *Network Planner layout.json* in your My Drive. It can't read anything else in your Drive.
+- **Saving:** every change is saved to this server as usual, and to Drive about two seconds later. The button shows *Drive · Saved* with the time.
+- **First sign-in on a device:** if Drive already has a layout, you choose between opening the Drive copy (the device's own layout is kept in Undo) and keeping the device's layout and saving it to Drive.
+- **Keeping devices in step:** when you come back to a tab, and once a minute while it's open, the app checks Drive. A newer copy saved from another device is loaded automatically, and the button says *Updated from another device*. `Ctrl+Z` undoes it. If this device also has changes that aren't on Drive yet, you're asked which to keep.
+- **Sessions:** Google sign-in lasts about an hour. Browsers only allow Google's sign-in window to open after a click, so when the session ends the button changes to **Reconnect Drive**. One click reconnects, usually without asking for your password again. Changes you make in the meantime are kept and saved to Drive once you reconnect. Reloading the page within the hour doesn't sign you out.
+- **The menu** (click your account chip) has *Save to Drive now*, *Check for changes from other devices*, *Show the file in Google Drive* and *Sign out*. Signing out also removes the app's Drive access.
+- **Offline copy:** the Drive file is plain JSON, the same as **Export**, so you can also download it from Drive and **Import** it anywhere.
+
+> **Signing in doesn't lock the server.** Anyone who can reach the server can still see and edit its copy of the layout, as before. Drive sync gives each person their own copy in their own Drive; it isn't a login for the server. See the security note under [Configuration](#configuration).
+
+### One-time setup: create a Google client ID
+Google requires every app that uses sign-in to be registered. This is free and takes about five minutes. You only do it once, however many devices or people use it.
+
+1. Go to the [Google Cloud console](https://console.cloud.google.com/) and **create a project**, e.g. *Network Planner*.
+2. Open **APIs & Services → Library**, search for **Google Drive API** and click **Enable**.
+3. Open **Google Auth Platform** (or *OAuth consent screen*) and click **Get started**:
+   - **App name:** *Network Planner*, with your email as the support address.
+   - **Audience:** *External*.
+   - Add your contact email and finish.
+   - Under **Audience → Test users**, add every Gmail address that should be able to sign in. While the app is in *Testing* mode, only these accounts can use it (up to 100), which is ideal for personal or team use.
+4. Open **Clients → Create client**:
+   - **Application type:** *Web application*
+   - **Authorized JavaScript origins:** add each address you open Network Planner at, for example `http://localhost:8080` and `https://planner.example.com`. No redirect URIs are needed.
+   - Click **Create** and copy the **Client ID**. It ends in `.apps.googleusercontent.com`. There's no client secret to keep.
+5. Start the container with the ID:
+
+```bash
+docker run -d \
+  --name networkplanner \
+  -p 8080:8080 \
+  -v networkplanner-data:/data \
+  -e GOOGLE_CLIENT_ID=1234567890-abc123.apps.googleusercontent.com \
+  --restart unless-stopped \
+  ghcr.io/fatalx26/networkplanner:latest
+```
+
+With Compose, put `GOOGLE_CLIENT_ID=…` in a `.env` file next to `docker-compose.yml` and run `docker compose up -d`. The startup log says `Google Drive sync: enabled` when the ID is picked up.
+
+> **Addresses Google allows:** Google only lets sign-in run on `http://localhost` or an **`https://`** address. A plain IP such as `http://192.168.1.20:8080` won't work. To sign in from other devices, either run Network Planner on each device (localhost), or put it behind a reverse proxy with an https name (Nginx Proxy Manager, Caddy, Traefik and so on). Add each address to *Authorized JavaScript origins* in step 4.
 
 ---
 
@@ -284,6 +336,7 @@ docker cp ./layout-backup.json networkplanner:/data/layout.json && docker restar
 |---|---|---|
 | `GET` | `/api/layout` | Returns the saved layout JSON (`204` if nothing has been saved yet). |
 | `PUT` | `/api/layout` | Replaces the layout. The body must be JSON with `racks` and `devices` arrays. Max 20 MB. |
+| `GET` | `/api/config` | Returns `{ "googleClientId": "…" }` (empty when Drive sync is off). |
 | `GET` | `/healthz` | Returns `ok`. Used by the container health check. |
 
 ### Layout format

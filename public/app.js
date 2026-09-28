@@ -424,6 +424,7 @@
     try { localStorage.setItem('rackplanner.layout', JSON.stringify(state)); } catch { /* storage unavailable */ }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(save, 400);
+    markDriveDirty();
   }
   async function save() {
     try {
@@ -1291,6 +1292,294 @@
   }
 
   // ------------------------------------------------------------------
+  // Google Drive sync (optional)
+  // ------------------------------------------------------------------
+  // Turned on when the server has GOOGLE_CLIENT_ID. Sign-in uses Google
+  // Identity Services' token flow entirely in the browser (no server secrets)
+  // with the drive.file scope, so the app can only see the one file it
+  // creates: "Network Planner layout.json" in the user's My Drive.
+  //   • Sign in → if Drive already has a layout, the user picks it or this
+  //     device's layout; from then on every change is also saved to Drive.
+  //   • When the tab regains focus (and once a minute while visible) Drive is
+  //     checked; a newer copy saved from another device is loaded
+  //     automatically, or offered if this device has unsaved changes.
+  //   • Access tokens last about an hour. Browsers block sign-in popups that
+  //     aren't started by a click, so when one expires the button asks for a
+  //     single click to reconnect; changes made meanwhile are kept and saved
+  //     to Drive after reconnecting.
+  const DRIVE_FILE = 'Network Planner layout.json';
+  const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+  const DRIVE_API = 'https://www.googleapis.com/drive/v3';
+  const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
+  // rev counts local changes; synced is the rev last saved to Drive.
+  const drive = { clientId: '', client: null, token: null, expires: 0, user: null, fileId: null, rev: 0, synced: 0, busy: false, applying: false, timer: null, status: 'off', text: '' };
+  // Remembered per browser: account, Drive file, the Drive version last seen,
+  // and whether there are changes not yet saved to Drive.
+  const memo = {
+    get() { try { return JSON.parse(localStorage.getItem('networkplanner.drive')) || {}; } catch { return {}; } },
+    set(patch) { try { localStorage.setItem('networkplanner.drive', JSON.stringify({ ...memo.get(), ...patch })); } catch { /* storage unavailable */ } },
+    clear() { try { localStorage.removeItem('networkplanner.drive'); sessionStorage.removeItem('networkplanner.drive.token'); } catch { /* ignore */ } },
+  };
+  const G_LOGO = '<svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
+
+  // Toolbar button: "Sign in with Google", "Reconnect", or the account chip.
+  function setDrive(status, text = '') {
+    drive.status = status;
+    drive.text = text;
+    const btn = $('#drive-btn');
+    btn.className = `drive-btn is-${status}`;
+    const who = drive.user || {};
+    const avatar = who.photoLink
+      ? `<img src="${esc(who.photoLink)}" alt="" referrerpolicy="no-referrer">`
+      : `<span class="drive-initial">${esc((who.displayName || who.emailAddress || '?')[0].toUpperCase())}</span>`;
+    const label = {
+      off: `${G_LOGO}<span>Sign in with Google</span>`,
+      reconnect: `${G_LOGO}<span>Reconnect Drive</span>`,
+      error: `${G_LOGO}<span>${esc(text || 'Drive error')}</span>`,
+      busy: `${avatar}<span>${esc(text || 'Syncing…')}</span>`,
+      ok: `${avatar}<span>Drive · ${esc(text || 'Saved')}</span>`,
+      pending: `${avatar}<span>Drive · Unsaved</span>`,
+    }[status];
+    btn.innerHTML = label;
+    btn.title = {
+      off: 'Sign in with your Google account to save this layout to Google Drive and open it on other devices',
+      reconnect: 'Your Google session has expired. Click to reconnect; changes made meanwhile will be saved to Drive.',
+      error: text,
+      busy: 'Google Drive',
+      ok: `Saved to Google Drive as “${DRIVE_FILE}”${who.emailAddress ? ` (${who.emailAddress})` : ''}`,
+      pending: 'Changes will be saved to Google Drive in a moment',
+    }[status] || '';
+  }
+
+  // Fetch a Google API with the access token. A 401 means the token expired.
+  async function driveApi(url, opts = {}) {
+    if (!drive.token || Date.now() > drive.expires) throw Object.assign(new Error('expired'), { expired: true });
+    const r = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${drive.token}` } });
+    if (r.status === 401) { drive.token = null; throw Object.assign(new Error('expired'), { expired: true }); }
+    if (r.status === 404) throw Object.assign(new Error('not found'), { notFound: true });
+    if (!r.ok) throw new Error(`Google Drive error ${r.status}`);
+    return r.status === 204 ? null : r.json();
+  }
+  function driveFailed(err) {
+    drive.busy = false;
+    if (err.expired) setDrive('reconnect');
+    else setDrive(drive.user ? 'error' : 'off', err.message || 'Drive error');
+  }
+
+  async function initDrive() {
+    try { drive.clientId = (await fetch('api/config', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : {}))).googleClientId || ''; } catch { /* offline */ }
+    if (!drive.clientId) return;
+    $('#drive').hidden = false;
+    setDrive('off');
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.onload = () => {
+      drive.client = google.accounts.oauth2.initTokenClient({
+        client_id: drive.clientId,
+        scope: DRIVE_SCOPE,
+        callback: onDriveToken,
+        error_callback: () => setDrive(memo.get().email ? 'reconnect' : 'off'), // popup closed or blocked
+      });
+    };
+    s.onerror = () => setDrive('error', 'Google sign-in unavailable');
+    document.head.appendChild(s);
+    // A token from earlier in this tab (e.g. before a reload) is still usable.
+    try {
+      const t = JSON.parse(sessionStorage.getItem('networkplanner.drive.token'));
+      if (t && t.expires > Date.now() + 60e3) { drive.token = t.token; drive.expires = t.expires; }
+    } catch { /* ignore */ }
+    if (memo.get().pending) drive.rev = 1; // unsaved-to-Drive changes from a previous visit
+    if (drive.token) connectDrive(false);
+    else if (memo.get().email) setDrive('reconnect');
+    // Pick up changes made on other devices.
+    window.addEventListener('focus', () => checkDrive());
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkDrive(); });
+    setInterval(() => { if (!document.hidden) checkDrive(); }, 60e3);
+  }
+
+  function signInDrive() {
+    if (!drive.client) { setDrive('error', 'Google sign-in is still loading'); return; }
+    const m = memo.get();
+    drive.client.requestAccessToken({ prompt: m.email ? '' : 'consent', login_hint: m.email || undefined });
+  }
+
+  function onDriveToken(resp) {
+    if (resp.error || !google.accounts.oauth2.hasGrantedAllScopes(resp, DRIVE_SCOPE)) {
+      setDrive('error', 'Drive access was not allowed');
+      return;
+    }
+    drive.token = resp.access_token;
+    drive.expires = Date.now() + (Number(resp.expires_in) || 3600) * 1000;
+    try { sessionStorage.setItem('networkplanner.drive.token', JSON.stringify({ token: drive.token, expires: drive.expires })); } catch { /* ignore */ }
+    connectDrive(true);
+  }
+
+  const sameLayout = (a, b) => JSON.stringify(sanitize(clone(a))) === JSON.stringify(sanitize(clone(b)));
+  const layoutStats = (l) => `${l.racks.length} rack${l.racks.length === 1 ? '' : 's'}, ${l.devices.length} devices, ${l.connections.length} cables`;
+  const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+  // The Drive file this app created: the one remembered on this browser if it
+  // still exists, otherwise the newest one tagged as ours.
+  async function findDriveFile() {
+    const known = memo.get().fileId;
+    if (known) {
+      try {
+        const f = await driveApi(`${DRIVE_API}/files/${encodeURIComponent(known)}?fields=id,modifiedTime,trashed`);
+        if (!f.trashed) return f;
+      } catch (e) { if (!e.notFound) throw e; }
+    }
+    const q = encodeURIComponent("appProperties has { key='networkplanner' and value='layout' } and trashed=false");
+    const list = await driveApi(`${DRIVE_API}/files?q=${q}&orderBy=modifiedTime desc&pageSize=1&spaces=drive&fields=files(id,modifiedTime)`);
+    return list.files?.[0] || null;
+  }
+
+  // After sign-in (or reload with a live token): match this device up with Drive.
+  async function connectDrive(interactive) {
+    drive.busy = true;
+    setDrive('busy', 'Connecting…');
+    try {
+      if (!drive.user) drive.user = (await driveApi(`${DRIVE_API}/about?fields=user(displayName,emailAddress,photoLink)`)).user;
+      const m = memo.get();
+      if (m.email && m.email !== drive.user.emailAddress) { memo.clear(); drive.rev = 0; } // a different Google account
+      memo.set({ email: drive.user.emailAddress });
+      const file = await findDriveFile();
+      drive.busy = false;
+      if (!file) { await pushDrive(); return; } // first time: create the file
+      drive.fileId = file.id;
+      const seen = memo.get();
+      const unsaved = drive.rev !== drive.synced;
+      if (seen.fileId === file.id && seen.modified === file.modifiedTime) {
+        // Drive hasn't changed since this browser last synced.
+        if (unsaved) await pushDrive(); else setDrive('ok');
+        return;
+      }
+      const remote = sanitize(await driveApi(`${DRIVE_API}/files/${file.id}?alt=media`));
+      if (sameLayout(remote, state)) { memo.set({ fileId: file.id, modified: file.modifiedTime, pending: false }); drive.synced = drive.rev; setDrive('ok'); return; }
+      if (seen.fileId === file.id && !unsaved) { applyDriveLayout(remote, file, 'Loaded from Drive'); return; }
+      // First sync on this browser, or both sides changed: ask.
+      await chooseDriveCopy(remote, file, interactive);
+    } catch (err) { driveFailed(err); }
+  }
+
+  async function chooseDriveCopy(remote, file, interactive) {
+    const firstTime = memo.get().fileId !== file.id;
+    const v = await formDialog({
+      title: firstTime ? 'Google Drive already has a layout' : 'This layout changed on another device',
+      ok: 'Continue',
+      note: `<p><b>On Google Drive</b> <span class="muted">(saved ${esc(when(file.modifiedTime))})</span><br>${esc(layoutStats(remote))}</p>
+        <p><b>On this device</b>${firstTime ? '' : ' <span class="muted">(with changes not yet saved to Drive)</span>'}<br>${esc(layoutStats(state))}</p>`,
+      fields: [{
+        name: 'pick', label: 'Which one do you want to keep?', type: 'select', wide: true, value: 'drive',
+        options: [
+          { value: 'drive', label: 'Open the Google Drive copy here (Undo brings this device’s back)' },
+          { value: 'local', label: 'Keep this device’s layout and save it to Drive' },
+        ],
+      }],
+    });
+    if (!v) { if (interactive && firstTime) signOutDrive(); else setDrive('pending'); return; }
+    if (v.pick === 'drive') applyDriveLayout(remote, file, 'Opened from Drive');
+    else { drive.fileId = file.id; await pushDrive(); }
+  }
+
+  // Replace the layout with the Drive copy. It still goes through commit(), so
+  // it's saved to this server and can be undone, but isn't re-uploaded.
+  function applyDriveLayout(remote, file, msg) {
+    drive.applying = true;
+    ui.pending = ui.conn = ui.device = null; ui.multi = [];
+    try { commit(() => { state = remote; }); } finally { drive.applying = false; }
+    renderPalette();
+    drive.fileId = file.id;
+    drive.synced = drive.rev;
+    memo.set({ fileId: file.id, modified: file.modifiedTime, pending: false });
+    setDrive('ok', msg);
+    setTimeout(() => { if (drive.status === 'ok' && drive.text === msg) setDrive('ok'); }, 5000);
+  }
+
+  // Called from scheduleSave(): queue a Drive save a couple of seconds after
+  // the last change.
+  function markDriveDirty() {
+    if (!drive.clientId || drive.applying) return;
+    drive.rev++;
+    if (!memo.get().email) return; // never signed in on this browser
+    memo.set({ pending: true });
+    if (!drive.token) { setDrive('reconnect'); return; }
+    if (drive.status !== 'busy') setDrive('pending');
+    clearTimeout(drive.timer);
+    drive.timer = setTimeout(() => pushDrive().catch(driveFailed), 2000);
+  }
+
+  async function pushDrive() {
+    if (drive.busy) { clearTimeout(drive.timer); drive.timer = setTimeout(() => pushDrive().catch(driveFailed), 1000); return; }
+    clearTimeout(drive.timer);
+    drive.busy = true;
+    const rev = drive.rev;
+    setDrive('busy', 'Saving to Drive…');
+    try {
+      const body = JSON.stringify(state);
+      let f;
+      if (drive.fileId) {
+        f = await driveApi(`${DRIVE_UPLOAD}/files/${drive.fileId}?uploadType=media&fields=id,modifiedTime`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body });
+      } else {
+        const boundary = `np${Date.now()}`;
+        const meta = { name: DRIVE_FILE, mimeType: 'application/json', appProperties: { networkplanner: 'layout' } };
+        f = await driveApi(`${DRIVE_UPLOAD}/files?uploadType=multipart&fields=id,modifiedTime`, {
+          method: 'POST',
+          headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+          body: `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${body}\r\n--${boundary}--`,
+        });
+      }
+      drive.fileId = f.id;
+      drive.synced = rev;
+      drive.busy = false;
+      const clean = drive.rev === rev;
+      memo.set({ fileId: f.id, modified: f.modifiedTime, pending: !clean });
+      if (clean) setDrive('ok', `Saved ${new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`);
+      else { setDrive('pending'); drive.timer = setTimeout(() => pushDrive().catch(driveFailed), 1000); } // edited during upload
+    } catch (err) {
+      if (err.notFound) { drive.fileId = null; memo.set({ fileId: null }); drive.busy = false; return pushDrive(); } // file deleted in Drive: recreate
+      driveFailed(err);
+    }
+  }
+
+  // Look for a newer copy saved from another device.
+  async function checkDrive() {
+    if (!drive.token || drive.busy || !drive.fileId || Date.now() > drive.expires || $('#dlg').open) return;
+    try {
+      const f = await driveApi(`${DRIVE_API}/files/${drive.fileId}?fields=id,modifiedTime,trashed`);
+      if (f.trashed || f.modifiedTime === memo.get().modified) return;
+      const remote = sanitize(await driveApi(`${DRIVE_API}/files/${f.id}?alt=media`));
+      if (sameLayout(remote, state)) { memo.set({ modified: f.modifiedTime }); return; }
+      if (drive.rev === drive.synced) applyDriveLayout(remote, f, 'Updated from another device');
+      else await chooseDriveCopy(remote, f, false);
+    } catch (err) { if (err.expired) setDrive('reconnect'); }
+  }
+
+  function signOutDrive() {
+    if (drive.token && window.google?.accounts?.oauth2) google.accounts.oauth2.revoke(drive.token, () => {});
+    Object.assign(drive, { token: null, expires: 0, user: null, fileId: null, busy: false });
+    clearTimeout(drive.timer);
+    memo.clear();
+    $('#drive-menu').hidden = true;
+    setDrive('off');
+  }
+
+  function toggleDriveMenu(show = $('#drive-menu').hidden) {
+    const menu = $('#drive-menu');
+    $('#drive-btn').setAttribute('aria-expanded', String(show));
+    if (!show) { menu.hidden = true; return; }
+    const who = drive.user || {};
+    const m = memo.get();
+    menu.innerHTML = `<div class="drive-who"><b>${esc(who.displayName || 'Google account')}</b><span>${esc(who.emailAddress || '')}</span></div>
+      <div class="drive-file">Syncing <b>${esc(DRIVE_FILE)}</b>${m.modified ? `<br>last saved to Drive ${esc(when(m.modified))}` : ''}</div>
+      <button role="menuitem" data-drive="save">Save to Drive now</button>
+      <button role="menuitem" data-drive="check">Check for changes from other devices</button>
+      ${drive.fileId ? `<a role="menuitem" href="https://drive.google.com/file/d/${encodeURIComponent(drive.fileId)}/view" target="_blank" rel="noopener">Show the file in Google Drive</a>` : ''}
+      <button role="menuitem" data-drive="signout" class="danger">Sign out</button>`;
+    menu.hidden = false;
+  }
+
+  // ------------------------------------------------------------------
   // Dialog helper
   // ------------------------------------------------------------------
   // `note` is optional trusted HTML shown above the fields.
@@ -1372,6 +1661,20 @@
         alert(`Could not import: ${err.message}`);
       }
     });
+    // Google Drive button and menu
+    $('#drive-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (['off', 'reconnect'].includes(drive.status) || (drive.status === 'error' && !drive.token)) signInDrive();
+      else toggleDriveMenu();
+    });
+    $('#drive-menu').addEventListener('click', (e) => {
+      const act = e.target.closest('[data-drive]')?.dataset.drive;
+      toggleDriveMenu(false);
+      if (act === 'save') pushDrive();
+      if (act === 'check') { if (drive.token) checkDrive().then(() => { if (drive.status === 'ok' && !drive.text.startsWith('Updated')) setDrive('ok', 'Up to date'); }); else signInDrive(); }
+      if (act === 'signout') signOutDrive();
+    });
+    document.addEventListener('click', (e) => { if (!e.target.closest('#drive')) toggleDriveMenu(false); });
     $('#file-csv').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       e.target.value = '';
@@ -1692,5 +1995,6 @@
     renderRacks();
     if (fromServer) setStatus('Saved', 'ok');
     else scheduleSave();
+    initDrive();
   })();
 })();

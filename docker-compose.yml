@@ -18,6 +18,11 @@ services:
     volumes:
       # Named volume holding /data/layout.json (your racks, devices and cables).
       - networkplanner-data:/data
+    environment:
+      # Optional: Google OAuth client ID to turn on "Sign in with Google" and
+      # Google Drive sync (see README → Saving to Google Drive). Set it in a
+      # .env file next to this one: GOOGLE_CLIENT_ID=….apps.googleusercontent.com
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
     restart: unless-stopped
 
 volumes:
