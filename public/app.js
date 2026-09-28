@@ -87,7 +87,8 @@
   // DOM element). `ui` is transient selection/view state that is not saved.
   let state = null;
   const idx = { dev: new Map(), rack: new Map(), conn: new Map(), byPort: new Map(), rear: new Map(), portEl: new Map() };
-  const ui = { pending: null, conn: null, origin: null, device: null, peek: null, mode: 'all', color: COLORS[0], zoom: 1 };
+  // multi = port keys picked with Ctrl+click, shown together with their cables.
+  const ui = { pending: null, conn: null, origin: null, device: null, multi: [], peek: null, mode: 'all', color: COLORS[0], zoom: 1 };
   const undoStack = [];
   let drag = null;
   let editing = false;
@@ -201,7 +202,7 @@
   // panel's rear link, then along whatever front cable is on the far panel, and
   // so on. Returns the ordered path; seq[i].via is the link between seq[i-1]
   // and seq[i] ('cable' or 'rear'). A rear note ends the path off-plan.
-  function tracePath(c) {
+  function tracePath(c, origin = ui.origin) {
     const seen = new Set([c.a, c.b]);
     const walk = (start) => {
       const out = [];
@@ -220,7 +221,7 @@
       }
       return out;
     };
-    const near = ui.origin === c.b ? c.b : c.a;
+    const near = origin === c.b ? c.b : c.a;
     const far = otherEnd(c, near);
     const L = walk(near);
     const R = walk(far);
@@ -322,6 +323,7 @@
     if (ui.conn && !idx.conn.has(ui.conn)) { ui.conn = null; ui.origin = null; }
     if (ui.device && !idx.dev.has(ui.device)) ui.device = null;
     if (ui.pending && !idx.dev.has(parseKey(ui.pending).devId)) ui.pending = null;
+    ui.multi = ui.multi.filter((k) => idx.dev.has(parseKey(k).devId));
   }
 
   // True if a device `h` units tall can sit with its bottom at `u` in `rack`
@@ -560,6 +562,26 @@
       }
       mark(idx.portEl.get(ui.origin === c.a ? c.b : c.a), 'hl-far');
     }
+    // Ctrl+click multi-selection: every picked port plus its whole path.
+    for (const key of ui.multi) {
+      mark(idx.portEl.get(key), 'multi');
+      mark(devEl(parseKey(key).devId), 'hl-dev');
+      const mc = idx.byPort.get(key);
+      if (mc) {
+        const path = tracePath(mc, key);
+        path.conns.forEach((id) => hlConns.add(id));
+        hlRears.push(...path.rears);
+        for (const s of path.seq) {
+          if (!s.key || s.key === key) continue;
+          mark(idx.portEl.get(s.key), 'hl');
+          mark(devEl(parseKey(s.key).devId), 'hl-dev');
+        }
+        mark(idx.portEl.get(otherEnd(mc, key)), 'hl-far');
+      } else if (idx.rear.has(key)) {
+        mark(idx.portEl.get(idx.rear.get(key)), 'hl-rear');
+        hlRears.push([key, idx.rear.get(key)]);
+      }
+    }
     if (ui.device) {
       mark(devEl(ui.device), 'selected');
       // A selected panel shows where its rear links go.
@@ -595,7 +617,7 @@
       const q = center(eb);
       const sag = 22 + Math.min(200, (Math.abs(q.x - p.x) + Math.abs(q.y - p.y)) * 0.22);
       const d = `M${p.x.toFixed(1)},${p.y.toFixed(1)} C${p.x.toFixed(1)},${(p.y + sag).toFixed(1)} ${q.x.toFixed(1)},${(q.y + sag).toFixed(1)} ${q.x.toFixed(1)},${q.y.toFixed(1)}`;
-      const cls = `cable-g${hl ? ' hl' : ''}${ui.conn && !hl ? ' dim' : ''}`;
+      const cls = `cable-g${hl ? ' hl' : ''}${(ui.conn || ui.multi.length) && !hl ? ' dim' : ''}`;
       const g = `<g class="${cls}"><path class="cable-shadow" d="${d}"/><path class="cable" d="${d}" stroke="${esc(c.color)}"/>` +
         `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${esc(c.color)}"/><circle cx="${q.x}" cy="${q.y}" r="3" fill="${esc(c.color)}"/></g>`;
       if (hl) top += g; else normal += g;
@@ -731,6 +753,31 @@
       return;
     }
 
+    if (ui.multi.length) {
+      const rows = ui.multi.map((key) => {
+        const p = describePort(key);
+        const mc = idx.byPort.get(key);
+        let where = '<span class="muted">No cable</span>';
+        if (mc) {
+          where = `→ ${esc(describePort(otherEnd(mc, key)).text)}${mc.label ? ` <span class="muted">“${esc(mc.label)}”</span>` : ''}`;
+          const path = tracePath(mc, key);
+          const last = path.seq[path.seq.length - 1];
+          if (path.extended) where += `<br><span class="muted">ends at ${esc(last.key ? `${describePort(last.key).text} (${describePort(last.key).loc})` : last.note)}</span>`;
+        } else if (rearText(key)) {
+          where += `<br><span class="muted">rear → ${esc(rearText(key))}</span>`;
+        }
+        const extra = [netSummary(key), portInfo(key).details && shorten(portInfo(key).details.replace(/\s+/g, ' '), 60)].filter(Boolean).join(' · ');
+        return `<li data-mkey="${key}" style="--c:${esc(mc ? mc.color : '#4b5563')}" title="Click to show the other end"><span class="dot"></span>
+          <span class="m-body"><b>${esc(p.text)}</b> <span class="muted">${esc(p.loc)}</span><br>${where}${extra ? `<br><span class="muted">${esc(extra)}</span>` : ''}</span>
+          <button class="m-x" data-unmulti="${key}" title="Remove from selection">×</button></li>`;
+      }).join('');
+      el.innerHTML = `<div class="insp"><h3>${ui.multi.length} port${ui.multi.length === 1 ? '' : 's'} selected</h3>
+        <p class="hint">Ctrl+click ports to add or remove them. Click a row to jump to its other end. <kbd>Esc</kbd> clears.</p>
+        <ul class="conn-list multi-list">${rows}</ul>
+        <div class="row"><button class="btn small" data-act="multi-clear">Clear selection</button></div></div>`;
+      return;
+    }
+
     if (c) {
       const farKey = ui.origin === c.a ? c.b : c.a;
       const nearKey = otherEnd(c, farKey);
@@ -795,6 +842,7 @@
         <li>Click a port, then click another port to connect them with a cable.</li>
         <li>Click any connected port to highlight the other end.</li>
         <li>Click any port to add details. On a patch panel you can also set where its rear goes, even to another rack.</li>
+        <li>Hold <kbd>Ctrl</kbd> and click ports to see several cables at once.</li>
         <li>Click a device body to rename it, add notes or delete it.</li>
       </ol>
       <p><kbd>Esc</kbd> clear selection · <kbd>Del</kbd> delete selected · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+scroll zoom</p>
@@ -807,8 +855,8 @@
   // Actions
   // ------------------------------------------------------------------
   function clearSelection() {
-    if (!ui.pending && !ui.conn && !ui.device) return;
-    ui.pending = null; ui.conn = null; ui.origin = null; ui.device = null;
+    if (!ui.pending && !ui.conn && !ui.device && !ui.multi.length) return;
+    ui.pending = null; ui.conn = null; ui.origin = null; ui.device = null; ui.multi = [];
     updateHighlights();
   }
 
@@ -817,7 +865,18 @@
   //   free port, none held  → hold it as the pending first end
   //   same pending port     → cancel
   //   another free port     → create the cable between the two
-  function onPortClick(key) {
+  //   Ctrl+click            → add/remove the port in the multi-selection
+  //                           (a port already selected the normal way joins it)
+  function onPortClick(key, multi = false) {
+    if (multi) {
+      const seed = ui.conn ? ui.origin : ui.pending;
+      if (!ui.multi.length && seed && seed !== key) ui.multi = [seed];
+      ui.multi = ui.multi.includes(key) ? ui.multi.filter((k) => k !== key) : [...ui.multi, key];
+      ui.pending = null; ui.conn = null; ui.origin = null; ui.device = null;
+      updateHighlights();
+      return;
+    }
+    ui.multi = [];
     const existing = idx.byPort.get(key);
     if (existing) {
       ui.pending = null; ui.device = null; ui.conn = existing.id; ui.origin = key;
@@ -1048,9 +1107,9 @@
         return;
       }
       const port = e.target.closest('.port');
-      if (port) { onPortClick(port.dataset.p); return; }
+      if (port) { onPortClick(port.dataset.p, e.ctrlKey || e.metaKey); return; }
       const dev = e.target.closest('.device');
-      if (dev) { ui.device = dev.dataset.dev; ui.conn = null; ui.origin = null; ui.pending = null; updateHighlights(); }
+      if (dev) { ui.device = dev.dataset.dev; ui.conn = null; ui.origin = null; ui.pending = null; ui.multi = []; updateHighlights(); }
     });
     $('#workspace').addEventListener('click', (e) => {
       if (!e.target.closest('.device, .port, [data-act], .rack-head')) clearSelection();
@@ -1253,6 +1312,17 @@
         return;
       }
       if (act === 'rear-clear' && ui.device) { const id = ui.device; commit(() => removeDeviceRear(id)); return; }
+      if (act === 'multi-clear') { clearSelection(); return; }
+      const unm = e.target.closest('[data-unmulti]');
+      if (unm) { ui.multi = ui.multi.filter((k) => k !== unm.dataset.unmulti); updateHighlights(); return; }
+      const mrow = e.target.closest('li[data-mkey]');
+      if (mrow) {
+        const k = mrow.dataset.mkey;
+        const mc = idx.byPort.get(k);
+        const target = mc ? otherEnd(mc, k) : idx.rear.get(k) || k;
+        scrollToPort(target); setPeek(target);
+        return;
+      }
 
       const ga = e.target.closest('[data-goto-any]');
       if (ga) { scrollToPort(ga.dataset.gotoAny); setPeek(ga.dataset.gotoAny); return; }
@@ -1266,7 +1336,7 @@
       const li = e.target.closest('li[data-conn]');
       if (li) {
         const cc = idx.conn.get(li.dataset.conn);
-        ui.conn = cc.id; ui.origin = li.dataset.origin; ui.device = null; ui.pending = null;
+        ui.conn = cc.id; ui.origin = li.dataset.origin; ui.device = null; ui.pending = null; ui.multi = [];
         updateHighlights();
         scrollToPort(otherEnd(cc, li.dataset.origin));
       }

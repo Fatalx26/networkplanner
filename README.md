@@ -4,6 +4,22 @@ A self-hosted web app for drawing server racks and documenting every cable. You 
 
 It runs in a single small container, saves automatically, and needs no database.
 
+![Two racks with colour-coded cables between switches, servers, patch panels and power](docs/screenshots/overview.png)
+
+> All screenshots in this README use a made-up demo layout. The names, VLANs and IP addresses are examples only.
+
+## What it can do
+
+- **Racks:** build as many racks as you need, 1–100U each, and drag them into any order.
+- **Equipment:** drag switches, patch and fibre panels, routers, firewalls, servers, storage, PDUs, UPSs and accessories into racks, or define your own custom devices.
+- **Cables:** click two ports to connect them, in the same rack or across racks. Give each cable a colour and a label or ID.
+- **Tracing:** click either end of a cable to highlight it and make the other end pulse. Hold `Ctrl` and click ports to see several cables at once.
+- **Network settings:** record a VLAN, IP address and subnet on every port of an active device.
+- **Port details:** write free-text notes on any port.
+- **Patch panel rear connections:** record where the permanent cabling behind a panel goes, to another panel in any rack or to a wall jack or room. The app then shows the **full path** of a cable through the panels.
+- **Documentation output:** download a CSV cable schedule, or export and import the whole layout as JSON.
+- **Everyday use:** undo, zoom and keyboard shortcuts, with autosave to the server.
+
 ```
 docker pull ghcr.io/fatalx26/networkplanner
 ```
@@ -92,6 +108,8 @@ The screen has three columns: the **equipment palette** (left), the **racks** (c
 - **Drag a placed device** to move it within a rack or to another rack. Its cables stay connected.
 - **Click a device body** to open it in the inspector. From there you can rename it, add notes (serial, asset tag, IP), change its port layout, list its connections, duplicate it or delete it.
 
+![The Device panel for a core switch, showing notes, port layout and its list of connections](docs/screenshots/device.png)
+
 Built-in equipment:
 
 | Category | Items |
@@ -104,6 +122,8 @@ Built-in equipment:
 
 **Custom devices:** the **+ Custom device…** form sets the name, height, look, and the number of RJ45, SFP, fibre LC and power ports, plus how many **rows** each type is laid out in. Custom devices are saved into the palette as part of the layout.
 
+<img src="docs/screenshots/custom-device.png" alt="The Custom device form, with fields for name, height, look, port counts and rows" width="720">
+
 **Port layout:** for any placed device, the inspector's *Port layout* section changes the number of rows and the numbering order of each port group. The options are *left to right*, or *odd on top, even below* (the usual switch style). A device can have up to 2 rows per rack unit, and existing cables stay attached.
 
 ### Cables
@@ -112,8 +132,19 @@ Built-in equipment:
 3. Click **either end** of a cable at any time. The cable is highlighted, the **other end pulses** and the view scrolls to it. The inspector shows both ends ("You clicked" / "Other end"), and you can give the cable a label or ID, recolour it or disconnect it.
 4. Hover a connected port to outline its far end without clicking.
 
+![A selected cable from a core switch port to a hypervisor NIC. The far end is outlined in yellow and the Connection panel shows both ends](docs/screenshots/connection.png)
+
+#### Seeing several cables at once
+Hold `Ctrl` (`Cmd` on a Mac) and click ports.
+- Each selected port gets a blue ring and the far end of its cable pulses. Routes through patch panel rear links are highlighted all the way to the end. All other cables dim.
+- The right-hand panel lists each selected port, where its cable goes, where it finally ends if it passes through panels, and any VLAN, IP or details. Click a row to jump to its other end, or its **×** to remove it.
+- `Ctrl`+click a selected port again to remove it. A normal click, `Esc` or **Clear selection** ends the multi-selection.
+- If a port is already selected with a normal click, `Ctrl`+clicking another port adds both.
+
+![Four ports selected with Ctrl+click in two racks, with their cables highlighted and listed in the side panel](docs/screenshots/multi-select.png)
+
 ### Network settings (VLAN, IP, subnet)
-In the **Connection** panel, each end of the cable that sits on an active device (switch, router, firewall, server and so on) has three fields:
+Every port on an active device (switch, router, firewall, server and so on) has three fields. They appear under each end in the **Connection** panel, and in the **Port** panel for a port with no cable:
 
 | Field | Examples |
 |---|---|
@@ -131,6 +162,9 @@ In the **Connection** panel, each end of the cable that sits on an active device
 Click any port, with or without a cable, to open its panel. The **Details** box takes free text, such as what the port serves, a room or desk number, PoE or a ticket number.
 - Ports with details show a small blue dot in the top-right corner.
 - The text appears in the port's tooltip, the device panel's connection list and the CSV export.
+- Clicking a port with no cable opens the **Port** panel. You can fill in its settings there, and clicking a second port still creates a cable as usual.
+
+![The Port panel for an unpatched patch panel port, with a rear destination of "Floor 2 · desk 2.09" and a details note](docs/screenshots/port-panel.png)
 
 ### Patch panel rear connections
 Patch and fibre panel ports have a **Rear connection** box, which records where the permanent cabling behind the panel goes.
@@ -138,10 +172,15 @@ Patch and fibre panel ports have a **Rear connection** box, which records where 
 - **Somewhere outside the plan:** leave the panel as "Not linked" and type a destination, such as `Office 2.14 wall jack`.
 - **Whole panel at once:** click the panel itself, choose the other panel under **Rear connections**, then click **Link ports 1:1**. Port 1 goes to port 1, port 2 to port 2 and so on.
 
+![Patch panel PP-A1 in the Core Rack selected. Dashed lines show its 24 rear links to PP-B1 in the Access Rack](docs/screenshots/rear-trunk.png)
+
 **How rear links show up:**
 - Linked ports have a grey bar along the top.
 - Selecting a linked port or panel draws dashed lines to the far panel.
-- When a cable's route passes through panels, the Connection panel shows a **Full path**, e.g. Switch 1 → Patch Panel A → *rear* → Patch Panel C (Rack B) → Server 9. Everything on that route is highlighted.
+- When a cable's route passes through panels, the Connection panel shows a **Full path**. Everything on that route is highlighted. In the example below, the path is Access Switch → PP-B1 → *rear* → PP-A1 (Core Rack) → Core Switch.
+
+![The full path of an uplink running from the Access Rack through two patch panels to the core switch in the Core Rack](docs/screenshots/full-path.png)
+
 - The CSV export has a **Rear** column for each end.
 - Deleting a panel removes its rear links. Undo brings them back.
 
@@ -221,6 +260,7 @@ docker cp ./layout-backup.json networkplanner:/data/layout.json && docker restar
 | `public/index.html` | Page shell: top toolbar, palette, workspace, inspector and the form dialog. |
 | `public/app.js` | The whole application: device catalogue, state and undo, rendering of racks, ports and SVG cables, drag and drop, the port-click connection logic, the inspector, import/export and autosave. |
 | `public/styles.css` | Dark theme, rack and device visuals, port states (pending, highlighted, pulsing), cable styling. |
+| `docs/screenshots/` | The README screenshots, taken from a made-up demo layout. They're left out of the Docker image. |
 | `Dockerfile` | `node:22-alpine` image running as a non-root user, with a `/data` volume, health check and OCI labels. |
 | `docker-compose.yml` | One-command deployment. It pulls the published image, or builds locally with `--build`. |
 | `.github/workflows/docker-publish.yml` | CI that builds and publishes the image to `ghcr.io` on every push to `main` and for version tags. |
