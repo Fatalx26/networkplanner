@@ -14,6 +14,7 @@ It runs in a single small container, saves automatically, and needs no database.
 - **Equipment:** drag switches, patch and fibre panels, routers, firewalls, servers, storage, PDUs, UPSs and accessories into racks, or define your own custom devices.
 - **Cables:** click two ports to connect them, in the same rack or across racks. Give each cable a colour and a label or ID.
 - **Tracing:** click either end of a cable to highlight it and make the other end pulse. Hold `Ctrl` and click ports to see several cables at once.
+- **Loop detection:** a switch cabled into itself, or two switches joined by more than one link, glows red with a warning. This includes loops through patch panels.
 - **Network settings:** record a VLAN, IP address and subnet on every port of an active device.
 - **Port details:** write free-text notes on any port.
 - **Patch panel rear connections:** record where the permanent cabling behind a panel goes, to another panel in any rack or to a wall jack or room. The app then shows the **full path** of a cable through the panels.
@@ -142,6 +143,25 @@ Hold `Ctrl` (`Cmd` on a Mac) and click ports.
 - If a port is already selected with a normal click, `Ctrl`+clicking another port adds both.
 
 ![Four ports selected with Ctrl+click in two racks, with their cables highlighted and listed in the side panel](docs/screenshots/multi-select.png)
+
+#### Network loop warnings
+The app watches for cabling that would create a switching loop:
+
+| Loop | Example |
+|---|---|
+| **A switch cabled into itself** | Switch 1 port 1 ↔ Switch 1 port 2 |
+| **Two or more links between the same two switches** | Switch 1 port 3 ↔ Switch 2 port 1 *and* Switch 1 port 4 ↔ Switch 2 port 2 |
+
+- **Patch panels count:** cables are followed through patch panel rear links. A switch that goes out through a panel, across the rear cabling and back into itself, or into another switch, is detected too.
+- **What you see:** every cable, port and rear link on the loop glows and slowly pulses red. A **⚠ N network loops** button appears in the toolbar. Click it to see the list.
+- **Where loops are listed:** the Overview panel lists every loop, and the Connection and Device panels show the loops their cable or device is part of. Click a row to select that cable.
+- **Clearing a warning:** the warning clears as soon as the cabling no longer loops, for example after you disconnect one of the links.
+- **Which devices count:** only devices with the **switch** look, including custom devices built with that look.
+- **Deliberate double links:** these are flagged too, such as LACP / port-channel bundles, or links where spanning tree blocks one path. The warning says so, and you can leave them as they are.
+
+![Two network loops glowing red. Core Switch is cabled into itself, and the Core and Access switches are joined by two trunk links running through patch panels PP-A1 and PP-B1](docs/screenshots/loops.png)
+
+In this example, the self-loop on Core Switch (port 31 ↔ port 32) is a cabling mistake. The two trunks between Core Switch and Access Switch run through the patch panels, and would be fine if they were configured as an LACP bundle.
 
 ### Network settings (VLAN, IP, subnet)
 Every port on an active device (switch, router, firewall, server and so on) has three fields. They appear under each end in the **Connection** panel, and in the **Port** panel for a port with no cable:

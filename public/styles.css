@@ -255,6 +255,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .port.pending { outline: 2px dashed #facc15; outline-offset: 1px; animation: blink .9s steps(2) infinite; z-index: 3; }
 .port.peek { outline: 2px solid var(--accent-2); outline-offset: 1px; z-index: 3; }
 .port.hl { outline: 2px solid #fff; outline-offset: 1px; z-index: 3; }
+/* Ports on a network loop glow and slowly pulse red (declared before .hl-far
+   so a selected far end still pulses yellow). */
+.port.loop { border-color: var(--danger); color: #fecaca; animation: loop-port 2.4s ease-in-out infinite; z-index: 2; }
+@keyframes loop-port {
+  0%, 100% { box-shadow: inset 0 -4px 0 var(--c, transparent), 0 0 2px 1px rgba(239,68,68,.45); }
+  50%      { box-shadow: inset 0 -4px 0 var(--c, transparent), 0 0 12px 5px rgba(239,68,68,.95); }
+}
 .port.hl-far { outline-color: #facc15; animation: pulse 1.1s ease-out infinite; }
 .port.hl-rear { outline: 2px dashed #cbd5e1; outline-offset: 1px; z-index: 3; }
 .port.multi { outline: 2px solid var(--accent); outline-offset: 1px; z-index: 3; box-shadow: 0 0 0 4px rgba(59,130,246,.35); }
@@ -277,6 +284,30 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .cable-g.hl .cable { stroke-width: 4.5; }
 .cable-g.hl .cable-shadow { stroke-width: 9; stroke: rgba(250,204,21,.35); }
 .rear-link { fill: none; stroke: #cbd5e1; stroke-width: 2.5; stroke-dasharray: 7 5; stroke-linecap: round; }
+/* Cables and rear links on a network loop: the line fades to red and a red
+   glow swells around it, on a slow 2.4s cycle. They are never dimmed. */
+.cable-g.loop, .cable-g.loop.dim { opacity: 1; }
+.cable-g.loop .cable, .rear-g.loop .rear-link { animation: loop-line 2.4s ease-in-out infinite; }
+.cable-g.loop .cable-shadow, .rear-g.loop .cable-shadow { stroke: #ef4444; animation: loop-glow 2.4s ease-in-out infinite; }
+@keyframes loop-line { 50% { stroke: #ef4444; } }
+@keyframes loop-glow {
+  0%, 100% { stroke-width: 6; stroke-opacity: .25; }
+  50%      { stroke-width: 14; stroke-opacity: .65; }
+}
+
+/* Toolbar warning and the inspector's loop list */
+.loop-alert {
+  background: rgba(239,68,68,.14); color: #fecaca; border: 1px solid #7f1d1d; border-radius: 999px;
+  padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;
+  animation: loop-badge 2.4s ease-in-out infinite;
+}
+.loop-alert:hover { background: rgba(239,68,68,.25); }
+@keyframes loop-badge { 50% { box-shadow: 0 0 12px 2px rgba(239,68,68,.55); } }
+.loop-box { border: 1px solid #7f1d1d; background: rgba(239,68,68,.08); border-radius: 8px; padding: 10px 10px 2px; margin-bottom: 14px; }
+.loop-head { color: #fca5a5; font-weight: 650; font-size: 13px; margin-bottom: 8px; }
+.loop-issue { margin-bottom: 8px; font-size: 12.5px; }
+.loop-issue .conn-list li { padding: 4px 6px; }
+.loop-box .hint { color: var(--muted); }
 
 /* ---------- Inspector ---------- */
 .insp h3 { margin: 0 0 12px; font-size: 15px; }

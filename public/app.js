@@ -239,6 +239,50 @@
     return { seq, conns, rears, extended: L.length + R.length > 0 };
   }
 
+  // Network loop detection. Each cable is followed through any patch panel
+  // rear links to its real end-points; only switch-to-switch links count.
+  //   self   – a switch is cabled back into itself
+  //   double – two or more separate links join the same two switches
+  // Everything on a looping link (cables, ports, rear links) glows red.
+  let loops = { conns: new Set(), ports: new Set(), rears: [], issues: [] };
+  const isSwitch = (key) => idx.dev.get(parseKey(key).devId)?.skin === 'switch';
+  function findLoops() {
+    const links = new Map();
+    for (const c of state.connections) {
+      const path = tracePath(c, c.a);
+      const first = path.seq[0];
+      const last = path.seq[path.seq.length - 1];
+      if (!first.key || !last.key || !isSwitch(first.key) || !isSwitch(last.key)) continue;
+      const [a, b] = [first.key, last.key].sort();
+      const id = `${a}|${b}`;
+      if (!links.has(id)) links.set(id, { a, b, conns: path.conns, ports: path.seq.map((s) => s.key).filter(Boolean), rears: path.rears });
+    }
+    const out = { conns: new Set(), ports: new Set(), rears: [], issues: [] };
+    const flag = (l) => { l.conns.forEach((id) => out.conns.add(id)); l.ports.forEach((k) => out.ports.add(k)); out.rears.push(...l.rears); };
+    const pairs = new Map();
+    for (const l of links.values()) {
+      const da = parseKey(l.a).devId;
+      const db = parseKey(l.b).devId;
+      if (da === db) { flag(l); out.issues.push({ type: 'self', devs: [da], links: [l] }); continue; }
+      const pid = [da, db].sort().join('|');
+      if (!pairs.has(pid)) pairs.set(pid, []);
+      pairs.get(pid).push(l);
+    }
+    for (const [pid, ls] of pairs) {
+      if (ls.length < 2) continue;
+      ls.forEach(flag);
+      const devs = pid.split('|').sort((x, y) => (idx.dev.get(x)?.name || '').localeCompare(idx.dev.get(y)?.name || '', undefined, { numeric: true }));
+      out.issues.push({ type: 'double', devs, links: ls });
+    }
+    return out;
+  }
+  // One-line summary of a loop, e.g. "Switch 1 is cabled into itself".
+  function loopTitle(issue) {
+    const [a, b] = issue.devs.map((id) => idx.dev.get(id)?.name);
+    return issue.type === 'self' ? `${a} is cabled into itself` : `${a} and ${b} are joined by ${issue.links.length} links`;
+  }
+  function loopForPort(key) { return loops.issues.find((i) => i.links.some((l) => l.ports.includes(key))); }
+
   function newDevice(tpl, rackId, u) {
     const n = state.devices.filter((d) => d.template === tpl.type).length + 1;
     const base = tpl.base || tpl.name;
@@ -465,6 +509,7 @@
       if (rear) { title += `\nRear → ${rear}`; cls += ' has-rear'; }
       const details = portInfo(key).details;
       if (details) { title += `\n${shorten(details, 200)}`; cls += ' has-note'; }
+      if (loops.ports.has(key)) { title += `\n⚠ Network loop: ${loopTitle(loopForPort(key))}`; cls += ' loop'; }
       cells += `<div class="${cls}" data-p="${key}" style="${style}" title="${esc(title)}">${i + 1}</div>`;
     }
     const showLabel = g.label && (rows === 1 || dev.height > 1);
@@ -512,7 +557,11 @@
 
   function renderRacks(opts = {}) {
     const root = $('#racks');
-    root.innerHTML = state.racks.map(rackHTML).join('') + '<button class="add-rack-tile" data-act="add-rack">+ Add rack</button>';
+    loops = findLoops();
+    const alertBtn = $('#loop-alert');
+    alertBtn.hidden = !loops.issues.length;
+    alertBtn.textContent = `⚠ ${loops.issues.length} network loop${loops.issues.length === 1 ? '' : 's'}`;
+    root.innerHTML =state.racks.map(rackHTML).join('') + '<button class="add-rack-tile" data-act="add-rack">+ Add rack</button>';
     idx.portEl.clear();
     root.querySelectorAll('.port').forEach((el) => idx.portEl.set(el.dataset.p, el));
     ui.peek = null;
@@ -617,14 +666,17 @@
       const q = center(eb);
       const sag = 22 + Math.min(200, (Math.abs(q.x - p.x) + Math.abs(q.y - p.y)) * 0.22);
       const d = `M${p.x.toFixed(1)},${p.y.toFixed(1)} C${p.x.toFixed(1)},${(p.y + sag).toFixed(1)} ${q.x.toFixed(1)},${(q.y + sag).toFixed(1)} ${q.x.toFixed(1)},${q.y.toFixed(1)}`;
-      const cls = `cable-g${hl ? ' hl' : ''}${(ui.conn || ui.multi.length) && !hl ? ' dim' : ''}`;
+      const cls = `cable-g${hl ? ' hl' : ''}${(ui.conn || ui.multi.length) && !hl ? ' dim' : ''}${loops.conns.has(c.id) ? ' loop' : ''}`;
       const g = `<g class="${cls}"><path class="cable-shadow" d="${d}"/><path class="cable" d="${d}" stroke="${esc(c.color)}"/>` +
         `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${esc(c.color)}"/><circle cx="${q.x}" cy="${q.y}" r="3" fill="${esc(c.color)}"/></g>`;
       if (hl) top += g; else normal += g;
     }
     // Rear links are only drawn for the current selection, as dashed lines that
     // arch upward so they don't read as front patch cables.
-    for (const [a, b] of hlRears) {
+    // Rear links that are part of a loop are always drawn, in red.
+    const loopRear = new Set(loops.rears.map(([a, b]) => [a, b].sort().join('|')));
+    const rearsToDraw = [...hlRears.filter(([a, b]) => !loopRear.has([a, b].sort().join('|'))), ...loops.rears];
+    for (const [a, b] of rearsToDraw) {
       const ea = idx.portEl.get(a);
       const eb = idx.portEl.get(b);
       if (!ea || !eb) continue;
@@ -633,7 +685,8 @@
       const lift = 26 + Math.min(160, (Math.abs(q.x - p.x) + Math.abs(q.y - p.y)) * 0.18);
       const up = (y) => Math.max(6, y - lift).toFixed(1); // keep the arch inside the canvas
       const d = `M${p.x.toFixed(1)},${p.y.toFixed(1)} C${p.x.toFixed(1)},${up(p.y)} ${q.x.toFixed(1)},${up(q.y)} ${q.x.toFixed(1)},${q.y.toFixed(1)}`;
-      top += `<g class="rear-g"><path class="cable-shadow" d="${d}"/><path class="rear-link" d="${d}"/></g>`;
+      const lp = loopRear.has([a, b].sort().join('|'));
+      top += `<g class="rear-g${lp ? ' loop' : ''}"><path class="cable-shadow" d="${d}"/><path class="rear-link" d="${d}"/></g>`;
     }
     svg.innerHTML = normal + top;
   }
@@ -663,6 +716,25 @@
     const extra = [netSummary(fromKey), portInfo(fromKey).details && shorten(portInfo(fromKey).details.replace(/\s+/g, ' '), 60)].filter(Boolean).join(' · ');
     return `<li data-conn="${c.id}" data-origin="${fromKey}" style="--c:${esc(c.color)}"><span class="dot"></span>
       <span><b>${esc(here.port)}</b> <span class="arrow">→</span> ${esc(there.text)}${c.label ? ` <span class="muted">“${esc(c.label)}”</span>` : ''}${extra ? `<br><span class="muted">${esc(extra)}</span>` : ''}</span></li>`;
+  }
+
+  // Red warning box listing loops; each link is a row that selects its cable.
+  function loopListHTML(issues) {
+    if (!issues.length) return '';
+    const via = (l) => {
+      const panels = [...new Set(l.ports.slice(1, -1).map((k) => idx.dev.get(parseKey(k).devId)?.name))];
+      return panels.length ? ` <span class="muted">via ${esc(panels.join(', '))}</span>` : '';
+    };
+    const body = issues.map((i) => `<div class="loop-issue"><b>${esc(loopTitle(i))}</b><ul class="conn-list">${i.links.map((l) => {
+      // Show the end on the first-named switch first.
+      const firstEnd = i.type === 'self' ? flatIndex(l.a) <= flatIndex(l.b) : parseKey(l.a).devId === i.devs[0];
+      const [x, y] = firstEnd ? [l.a, l.b] : [l.b, l.a];
+      const text = i.type === 'self' ? `${describePort(x).port} ↔ ${describePort(y).port}` : `${describePort(x).text} ↔ ${describePort(y).text}`;
+      return `<li data-conn="${idx.byPort.get(x).id}" data-origin="${x}" style="--c:var(--danger)"><span class="dot"></span><span>${esc(text)}${via(l)}</span></li>`;
+    }).join('')}</ul></div>`).join('');
+    return `<div class="loop-box"><div class="loop-head">⚠ Network loop${issues.length === 1 ? '' : 's'} detected</div>${body}
+      <p class="hint">Traffic caught in a loop circulates endlessly and can bring the network down (a broadcast storm).
+      If the links are a deliberate LACP / port-channel bundle, or spanning tree blocks one of them, this is expected.</p></div>`;
   }
 
   // Editable settings for one port: network fields (active devices), rear
@@ -789,6 +861,7 @@
       };
       const path = tracePath(c);
       el.innerHTML = `<div class="insp" data-scope="conn"><h3>Connection</h3>
+        ${loops.conns.has(c.id) ? loopListHTML(loops.issues.filter((i) => i.links.some((l) => l.conns.has(c.id)))) : ''}
         ${path.extended ? pathHTML(path.seq) : ''}
         ${ep(nearKey, false)}${portFieldsHTML(nearKey)}
         <div class="link-line" style="--c:${esc(c.color)}"><i></i>${c.label ? esc(c.label) : 'cable'}</div>
@@ -806,6 +879,7 @@
       dev.groups.forEach((g, gi) => { for (let pi = 0; pi < g.count; pi++) { const k = portKey(dev.id, gi, pi); const cc = idx.byPort.get(k); if (cc) conns.push(connRow(cc, k)); } });
       const range = dev.height > 1 ? `U${dev.u}–${dev.u + dev.height - 1}` : `U${dev.u}`;
       el.innerHTML = `<div class="insp" data-scope="dev"><h3>Device</h3>
+        ${loopListHTML(loops.issues.filter((i) => i.devs.includes(dev.id) || i.links.some((l) => l.ports.some((k) => parseKey(k).devId === dev.id))))}
         <label class="field">Name<input data-f="name" value="${esc(dev.name)}"></label>
         <div class="kv"><span>Rack</span><b>${esc(rack?.name)}</b><span>Position</span><b>${range}</b><span>Height</span><b>${dev.height}U</b>
           <span>Ports</span><b>${portCount(dev)} (${conns.length} connected)</b></div>
@@ -836,6 +910,7 @@
         <div class="stat"><b>${state.devices.length}</b><span>devices</span></div>
         <div class="stat"><b>${state.connections.length}</b><span>cables</span></div>
       </div>
+      ${loopListHTML(loops.issues)}
       <h4>How to use</h4>
       <ol>
         <li>Drag equipment from the left into a rack. Drag a device to move it, even to another rack.</li>
@@ -843,6 +918,7 @@
         <li>Click any connected port to highlight the other end.</li>
         <li>Click any port to add details. On a patch panel you can also set where its rear goes, even to another rack.</li>
         <li>Hold <kbd>Ctrl</kbd> and click ports to see several cables at once.</li>
+        <li>Cables that form a network loop pulse red, and a warning appears at the top.</li>
         <li>Click a device body to rename it, add notes or delete it.</li>
       </ol>
       <p><kbd>Esc</kbd> clear selection · <kbd>Del</kbd> delete selected · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+scroll zoom</p>
@@ -1043,6 +1119,13 @@
   function bindEvents() {
     // Toolbar
     $('#btn-add-rack').addEventListener('click', addRack);
+    // Loop warning: show the overview (which lists every loop) and the first loop.
+    $('#loop-alert').addEventListener('click', () => {
+      clearSelection();
+      renderInspector();
+      $('#inspector').scrollTo({ top: 0 });
+      if (loops.issues[0]) scrollToPort(loops.issues[0].links[0].a);
+    });
     $('#btn-undo').addEventListener('click', undo);
     $('#btn-export').addEventListener('click', () => download('rack-layout.json', JSON.stringify(state, null, 2), 'application/json'));
     $('#file-import').addEventListener('change', async (e) => {
