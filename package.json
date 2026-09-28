@@ -1,5 +1,5 @@
 {
-  "name": "rack-planner",
+  "name": "network-planner",
   "version": "1.0.0",
   "description": "Drag-and-drop server rack diagrams with port-to-port connection tracking",
   "main": "server.js",

@@ -1,5 +1,5 @@
 # =============================================================================
-# Network Planner (Rack Planner) — container image
+# Network Planner — container image
 #
 # Image:   docker pull ghcr.io/fatalx26/networkplanner
 # Run:     docker run -d -p 8080:8080 -v networkplanner-data:/data ghcr.io/fatalx26/networkplanner

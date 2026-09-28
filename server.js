@@ -111,5 +111,5 @@ http.createServer((req, res) => {
   if (pathname === '/healthz') return send(res, 200, 'ok');
   serveStatic(pathname, res);
 }).listen(PORT, () => {
-  console.log(`Rack Planner listening on http://0.0.0.0:${PORT} (data: ${DATA_FILE})`);
+  console.log(`Network Planner listening on http://0.0.0.0:${PORT} (data: ${DATA_FILE})`);
 });
