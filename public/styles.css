@@ -83,7 +83,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .save-status.warn::before { background: var(--warn); }
 
 /* ---------- Layout ---------- */
-.layout { flex: 1; display: grid; grid-template-columns: 236px 1fr 330px; min-height: 0; }
+/* Side panels can be collapsed with the toolbar toggles (.hide-left / .hide-right). */
+.layout {
+  --left: 236px; --right: 330px;
+  flex: 1; display: grid; grid-template-columns: var(--left) minmax(0, 1fr) var(--right); min-height: 0;
+  transition: grid-template-columns .2s ease;
+}
+.layout.hide-left { --left: 0px; }
+.layout.hide-right { --right: 0px; }
+.layout.hide-left .palette, .layout.hide-right .inspector { padding: 0; border: 0; overflow: hidden; visibility: hidden; }
+.panel-toggle { padding: 5px 7px; color: var(--muted); }
+.panel-toggle .pane { fill: currentColor; opacity: .25; transition: opacity .15s; }
+.panel-toggle[aria-pressed="true"] { color: var(--text); }
+.panel-toggle[aria-pressed="true"] .pane { opacity: 1; }
 .palette, .inspector { background: var(--panel); overflow: auto; padding: 14px; }
 .palette { border-right: 1px solid var(--line); }
 .inspector { border-left: 1px solid var(--line); }
@@ -408,5 +420,7 @@ dialog h3 { margin: 0 0 14px; }
 dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 8px 0 0; padding: 0; }
 
 @media (max-width: 1100px) {
-  .layout { grid-template-columns: 200px 1fr 280px; }
+  .layout { --left: 200px; --right: 280px; }
+  .layout.hide-left { --left: 0px; }
+  .layout.hide-right { --right: 0px; }
 }

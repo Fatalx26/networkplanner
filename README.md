@@ -19,6 +19,7 @@ It runs in a single small container, saves automatically, and needs no database.
 - **Port details:** write free-text notes on any port.
 - **Patch panel rear connections:** record where the permanent cabling behind a panel goes, to another panel in any rack or to a wall jack or room. The app then shows the **full path** of a cable through the panels.
 - **Documentation output:** download a CSV cable schedule, or export and import the whole layout as JSON.
+- **Workspace:** hide either side panel with a toolbar button (or `[` / `]`) to give the racks more room.
 - **Everyday use:** undo, zoom and keyboard shortcuts, with autosave to the server.
 
 ```
@@ -96,6 +97,10 @@ The container runs as the unprivileged `node` user and includes a `HEALTHCHECK` 
 ## Using the app
 
 The screen has three columns: the **equipment palette** (left), the **racks** (centre) and the **inspector** (right).
+
+**Hiding the side panels:** the panel buttons at the far left and far right of the toolbar hide or show the palette and the inspector. The racks area widens to fill the space. You can also press `[` for the left panel and `]` for the right. Each browser remembers the setting. Clicking the loop warning always reopens the inspector.
+
+![Both side panels hidden, so two full racks fit side by side at 100% zoom](docs/screenshots/panels-hidden.png)
 
 ### Racks
 - **+ Add rack** creates a rack of any height from 1 to 100U. Racks sit side by side, and cables can run between them.
@@ -211,7 +216,7 @@ The **Cables: All / Selected / Hidden** toggle controls how many cables are draw
 - **Export / Import**: back up or restore the whole layout as a JSON file.
 - **Undo**: `Ctrl+Z`, up to 150 steps.
 - **Zoom**: the −/+ buttons, or `Ctrl` + mouse wheel.
-- **Keyboard**: `Esc` clears the selection, and `Delete` removes the selected cable or device.
+- **Keyboard**: `Esc` clears the selection, `Delete` removes the selected cable or device, and `[` / `]` hide or show the left / right panel.
 - **Autosave**: every change is saved to the server within half a second. The indicator in the top right shows *Saved*. If the server can't be reached, changes are kept in the browser and the indicator says so.
 
 ---

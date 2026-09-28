@@ -1116,11 +1116,34 @@
   // ------------------------------------------------------------------
   // Events
   // ------------------------------------------------------------------
+  // Side panels (equipment palette on the left, inspector on the right) can be
+  // collapsed. The choice is per browser, remembered in localStorage.
+  const panels = { left: true, right: true };
+  try { Object.assign(panels, JSON.parse(localStorage.getItem('networkplanner.panels')) || {}); } catch { /* ignore */ }
+  function applyPanels() {
+    $('.layout').classList.toggle('hide-left', !panels.left);
+    $('.layout').classList.toggle('hide-right', !panels.right);
+    for (const [side, label] of [['left', 'equipment panel'], ['right', 'details panel']]) {
+      const b = $(`#toggle-${side}`);
+      b.setAttribute('aria-pressed', String(panels[side]));
+      b.title = `${panels[side] ? 'Hide' : 'Show'} the ${label} (${side === 'left' ? '[' : ']'})`;
+    }
+    try { localStorage.setItem('networkplanner.panels', JSON.stringify(panels)); } catch { /* storage unavailable */ }
+  }
+  function togglePanel(side, show = !panels[side]) {
+    panels[side] = show;
+    applyPanels();
+  }
+
   function bindEvents() {
     // Toolbar
+    applyPanels();
+    $('#toggle-left').addEventListener('click', () => togglePanel('left'));
+    $('#toggle-right').addEventListener('click', () => togglePanel('right'));
     $('#btn-add-rack').addEventListener('click', addRack);
     // Loop warning: show the overview (which lists every loop) and the first loop.
     $('#loop-alert').addEventListener('click', () => {
+      togglePanel('right', true);
       clearSelection();
       renderInspector();
       $('#inspector').scrollTo({ top: 0 });
@@ -1431,6 +1454,8 @@
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); return; }
       if (typing || $('#dlg').open) return;
       if (e.key === 'Escape') clearSelection();
+      if (e.key === '[' && !e.ctrlKey && !e.metaKey) togglePanel('left');
+      if (e.key === ']' && !e.ctrlKey && !e.metaKey) togglePanel('right');
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (ui.conn) { const id = ui.conn; ui.conn = null; commit(() => { state.connections = state.connections.filter((x) => x.id !== id); }); }
         else if (ui.device) deleteDevice(ui.device);
