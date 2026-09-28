@@ -124,8 +124,20 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .pal-del:hover { background: #3a1c1c; color: #fca5a5; }
 
 /* ---------- Rack ---------- */
-.rack { flex: none; }
-.rack-head { display: flex; align-items: baseline; gap: 10px; margin: 0 4px 10px; }
+.rack { flex: none; position: relative; }
+.rack-head { display: flex; align-items: baseline; gap: 10px; margin: 0 4px 10px; cursor: grab; border-radius: 6px; }
+.rack-head:hover { background: rgba(255,255,255,.03); }
+.rack-head .btn { cursor: pointer; }
+.rack-grip { color: var(--muted); font-size: 14px; line-height: 1; user-select: none; }
+.rack-head:hover .rack-grip { color: var(--text); }
+/* Rack reordering: the dragged rack fades, a bar marks where it will land (racks are 80px apart) */
+.rack.dragging { opacity: .35; }
+.rack.drop-before::before, .rack.drop-after::after {
+  content: ''; position: absolute; top: 0; bottom: 0; width: 4px; border-radius: 2px; background: var(--accent);
+  box-shadow: 0 0 12px var(--accent); pointer-events: none;
+}
+.rack.drop-before::before { left: -42px; }
+.rack.drop-after::after { right: -42px; }
 .rack-name { font-weight: 650; font-size: 15px; }
 .rack-u { color: var(--muted); font-size: 12px; }
 .rack-actions { margin-left: auto; display: flex; gap: 6px; }

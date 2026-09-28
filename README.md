@@ -82,6 +82,7 @@ The screen has three columns: the **equipment palette** (left), the **racks** (c
 
 ### Racks
 - **+ Add rack** creates a rack of any height from 1 to 100U. Racks sit side by side, and cables can run between them.
+- **Drag a rack by its header** (the ⠿ handle and name) to reorder the racks. A blue bar shows where it will land. Its devices and cables move with it, and `Ctrl+Z` undoes the move.
 - A rack's **Edit** button renames or resizes it. You can't shrink it below installed equipment. **Delete** removes the rack along with its devices and their cables.
 - U numbers on the rails count from U1 at the bottom, like a real rack.
 

@@ -487,7 +487,8 @@
     let nums = '';
     for (let u = rack.units; u >= 1; u--) nums += `<span>${u}</span>`;
     return `<div class="rack" data-rack="${rack.id}">
-      <div class="rack-head">
+      <div class="rack-head" draggable="true" title="Drag to reorder racks">
+        <span class="rack-grip" aria-hidden="true">⠿</span>
         <span class="rack-name">${esc(rack.name)}</span>
         <span class="rack-u">${rack.units}U · ${used}U used · ${rack.units - used}U free</span>
         <span class="rack-actions">
@@ -1068,6 +1069,16 @@
     document.addEventListener('dragstart', (e) => {
       const el = e.target.closest ? e.target : e.target.parentElement;
       const pal = el?.closest('.pal-item');
+      const head = el?.closest('.rack-head');
+      if (head) {
+        // Dragging a rack by its header reorders the racks.
+        const rackEl = head.closest('.rack');
+        drag = { rack: idx.rack.get(rackEl.dataset.rack), el: rackEl };
+        setTimeout(() => rackEl.classList.add('dragging'), 0);
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', 'rack-planner');
+        return;
+      }
       if (pal) {
         const tpl = findTpl(pal.dataset.tpl);
         drag = { tpl, height: tpl.height, grab: (tpl.height * UPX) / 2 };
@@ -1084,11 +1095,29 @@
     });
 
     const hideGhosts = (except) => document.querySelectorAll('.ghost').forEach((g) => { if (g !== except) g.hidden = true; });
+    const clearRackMarks = () => document.querySelectorAll('.rack.drop-before, .rack.drop-after').forEach((r) => r.classList.remove('drop-before', 'drop-after'));
+
+    // Rack reordering: the drop position is before the first rack whose centre
+    // is right of the cursor (or after the last rack). drag.slot = index in
+    // state.racks to insert at, counted before the dragged rack is removed.
+    function rackDragOver(e) {
+      clearRackMarks();
+      drag.slot = null;
+      if (!e.target.closest?.('#workspace')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const els = [...document.querySelectorAll('#racks .rack')];
+      let slot = els.findIndex((r) => { const b = r.getBoundingClientRect(); return e.clientX < b.left + b.width / 2; });
+      if (slot === -1) slot = els.length;
+      drag.slot = slot;
+      if (slot < els.length) els[slot].classList.add('drop-before'); else els[els.length - 1]?.classList.add('drop-after');
+    }
 
     // While dragging over a rack: convert the cursor's Y position to a rack
     // unit, check it fits, and move the green/red ghost there.
     document.addEventListener('dragover', (e) => {
       if (!drag) return;
+      if (drag.rack) { rackDragOver(e); return; }
       const body = e.target.closest?.('.rack-body');
       const ghost = body?.querySelector('.ghost');
       hideGhosts(ghost);
@@ -1113,6 +1142,16 @@
     document.addEventListener('drop', (e) => {
       if (!drag) return;
       e.preventDefault();
+      if (drag.rack) {
+        clearRackMarks();
+        const from = state.racks.indexOf(drag.rack);
+        const slot = drag.slot;
+        if (slot == null || from === -1) return;
+        const to = slot > from ? slot - 1 : slot;
+        if (to === from) return;
+        commit(() => { const [r] = state.racks.splice(from, 1); state.racks.splice(to, 0, r); });
+        return;
+      }
       const t = drag.target;
       const d = drag;
       hideGhosts();
@@ -1129,6 +1168,7 @@
       drag?.el?.classList.remove('dragging');
       drag = null;
       hideGhosts();
+      clearRackMarks();
     });
 
     // Inspector
