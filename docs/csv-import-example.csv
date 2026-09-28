@@ -1,0 +1,11 @@
+Patch Panel,Port,,Switch,Switch Port,,,,Device,Ethernet Ports,Rows,SFP Ports,Rows
+1,1,,1,1,,,,Fiber Panel,,,12,1
+1,2,,1,2,,,,Patch Panel,24,1,,
+1,3,,,,,,,Switch,24,2,4,2
+1,4,,1,5,,,,Cable Manager,,,,
+1,5,,1,6,,,,Patch Panel,48,2,,
+1,6,,,,,,,Switch,48,2,4,2
+2,1,,2,1,,,,,,,,
+2,2,,2,2,,,,,,,,
+2,3,,2,4,,,,,,,,
+2,10,,1,25,,,,,,,,

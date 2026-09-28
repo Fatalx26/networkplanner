@@ -18,6 +18,7 @@ It runs in a single small container, saves automatically, and needs no database.
 - **Network settings:** record a VLAN, IP address and subnet on every port of an active device.
 - **Port details:** write free-text notes on any port.
 - **Patch panel rear connections:** record where the permanent cabling behind a panel goes, to another panel in any rack or to a wall jack or room. The app then shows the **full path** of a cable through the panels.
+- **CSV import:** build a whole rack, with its devices and cables, from a spreadsheet that lists patch panel ports, switch ports and the devices in rack order.
 - **Documentation output:** download a CSV cable schedule, or export and import the whole layout as JSON.
 - **Workspace:** hide either side panel with a toolbar button (or `[` / `]`) to give the racks more room.
 - **Everyday use:** undo, zoom and keyboard shortcuts, with autosave to the server.
@@ -210,6 +211,48 @@ Patch and fibre panel ports have a **Rear connection** box, which records where 
 - Deleting a panel removes its rear links. Undo brings them back.
 
 The **Cables: All / Selected / Hidden** toggle controls how many cables are drawn, which helps in busy racks.
+
+### Building a rack from a CSV file
+**Import CSV** in the toolbar builds a complete new rack, with its devices and cables, from a spreadsheet saved as CSV. Row 1 is treated as a header and ignored. The columns are:
+
+| Column | Holds |
+|---|---|
+| **A** | Patch panel |
+| **B** | Patch panel port |
+| **D** | Switch |
+| **E** | Switch port |
+| **I** | Device, listed in rack order from the top down |
+| **J** | Number of Ethernet ports on that device |
+| **K** | Rows of Ethernet ports |
+| **L** | Number of SFP ports |
+| **M** | Rows of SFP ports |
+
+Other columns (C, F, G, H…) are ignored, so you can use them for your own notes.
+
+**Devices (columns I–M)**
+- Each filled cell in column I becomes one device, stacked from the top of the rack in the order listed.
+- **Fiber Panel:** J and K are ignored; L and M become its LC fibre ports.
+- **Patch Panel:** L and M are ignored.
+- **Height:** each device gets enough rack units for its rows of ports (2 rows per U).
+- **Look:** the device's look is guessed from its name: switch, router, firewall, server, UPS/PDU, cable manager and so on.
+- **Blank counts:** a blank row count means 2 rows for more than 24 ports, otherwise 1. A panel or switch with no port count gets 24 ports, and the preview says so.
+
+**Cables (columns A, B, D, E)**
+- Each row with a switch in D and a port in E becomes one cable. A row that only lists a patch panel port, with D and E empty, is simply an unused port.
+- **Numbers in A and D:** a number in A means the Nth **Patch Panel** in column I, and a number in D the Nth **Switch**. Fibre panels are never counted, so `1` in column A is the first patch panel even if a fibre panel is listed above it.
+- **Names in A and D:** these are matched to the device names in column I. A name that isn't in column I is added at the bottom of the rack.
+- **Device names:** generic names are numbered to match: the patch panels become *Patch Panel 1, 2, 3…* and the switches *Switch 1, 2, 3…*.
+- **Port cells:** these can be plain numbers (`15`), switch-style names (`Gi1/0/15`) or `SFP 2`. Numbers past the last Ethernet port continue into the SFP ports, so on a 48 + 4 switch, port `49` is SFP 1.
+
+**Before anything is created**, a preview lists the devices in rack order, the number of cables, and anything that needs attention. Examples are a port used twice, a port number the device doesn't have, or a device with no port count. You can set the rack's name (it defaults to the file name) and its height before clicking **Create rack**. The whole import is a single step, so `Ctrl+Z` removes it again.
+
+![The Build rack from CSV preview: 6 devices listed in rack order, 8 cables, and fields for the rack name and height](docs/screenshots/csv-import.png)
+
+The same example after **Create rack**. The new rack is added to the right of the existing ones, with the devices stacked from the top and the cables drawn:
+
+![The imported rack: a fiber panel, two patch panels, two switches and a cable manager, with blue cables from the patch panels to the switches](docs/screenshots/csv-import-result.png)
+
+In Excel, use **File → Save As → CSV (Comma delimited)**. Semicolon- and tab-separated files work too. [`docs/csv-import-example.csv`](docs/csv-import-example.csv) is a small made-up example to start from.
 
 ### Other features
 - **Overview panel** (click empty space): shows totals and every connection, plus **Download CSV**, a cable schedule with the rack, U, device, port, VLAN, IP, subnet, rear connection and details for each end.

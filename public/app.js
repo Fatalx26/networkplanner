@@ -1085,14 +1085,221 @@
   }
 
   // ------------------------------------------------------------------
+  // CSV rack import
+  // ------------------------------------------------------------------
+  // Builds a new rack from a spreadsheet exported as CSV. Row 1 is a header
+  // and is skipped. Columns (spreadsheet letters):
+  //   A patch panel · B patch panel port · D switch · E switch port
+  //       → one cable per row (rows with no switch just list a panel port)
+  //   I device, listed top of rack → bottom
+  //   J Ethernet ports · K Ethernet rows · L SFP ports · M SFP rows
+  //       Fiber panels ignore J/K (L/M become LC ports); patch panels ignore L/M.
+  // A and D may be numbers or names. A number in A means "the Nth patch
+  // panel" and in D "the Nth switch", counted in column I order; fiber panels
+  // are never counted. Generic names in column I ("Patch Panel", "Switch",
+  // "Fiber Panel") are numbered the same way, so the rack reads
+  // "Patch Panel 2", "Switch 1" and so on. A name in A/D that isn't in
+  // column I is added at the bottom, sized to the highest port it uses.
+  const CSV_COL = { A: 0, B: 1, D: 3, E: 4, I: 8, J: 9, K: 10, L: 11, M: 12 };
+
+  // RFC 4180-style parser. The delimiter (comma, semicolon or tab) is taken
+  // from whichever appears most in the first line, which covers Excel's
+  // regional CSV variants.
+  function parseCSV(text) {
+    text = text.replace(/^﻿/, '');
+    const first = text.split(/\r?\n/, 1)[0];
+    const delim = [',', ';', '\t'].map((d) => [d, first.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+    const rows = [];
+    let row = [];
+    let cell = '';
+    let quoted = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (quoted) {
+        if (ch !== '"') cell += ch;
+        else if (text[i + 1] === '"') { cell += '"'; i++; } else quoted = false;
+      } else if (ch === '"') quoted = true;
+      else if (ch === delim) { row.push(cell); cell = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && text[i + 1] === '\n') i++;
+        row.push(cell); rows.push(row); row = []; cell = '';
+      } else cell += ch;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+
+  // Visual style guessed from the device name in column I.
+  function skinFromName(name) {
+    const n = name.toLowerCase();
+    const rules = [
+      [/fib(er|re)\s*panel/, 'fiber'], [/patch\s*panel/, 'patch'], [/switch/, 'switch'], [/router/, 'router'],
+      [/firewall/, 'firewall'], [/cable\s*manag/, 'cablemgmt'], [/shelf/, 'shelf'], [/blank/, 'blank'],
+      [/\b(nas|san|storage)\b/, 'storage'], [/\b(ups|pdu|power)\b/, 'power'], [/\bkvm\b/, 'kvm'], [/server|host|hypervisor/, 'server'],
+    ];
+    return rules.find(([re]) => re.test(n))?.[1] || 'generic';
+  }
+
+  // A device from its name and port counts. Height is the number of units
+  // needed for its port rows (2 rows per U), at least 1U. Blank row counts
+  // default to 2 rows above 24 ports (like real 48-port gear), otherwise 1.
+  // A patch panel, fiber panel or switch with no port counts gets 24 ports.
+  function csvDevice(name, eth, ethRows, sfpN, sfpRows, skin = skinFromName(name)) {
+    if (skin === 'fiber') eth = 0;
+    if (skin === 'patch') sfpN = 0;
+    if (!eth && !sfpN) { if (skin === 'patch' || skin === 'switch') eth = 24; if (skin === 'fiber') sfpN = 24; }
+    ethRows = ethRows || (eth > 24 ? 2 : 1);
+    sfpRows = sfpRows || (sfpN > 24 ? 2 : 1);
+    const groups = [];
+    const numbering = (rows) => (skin === 'switch' && rows > 1 ? 'oddeven' : 'seq');
+    if (eth > 0) { const rows = clamp(ethRows || 1, 1, eth); groups.push({ kind: 'rj45', count: eth, rows, label: '', numbering: numbering(rows) }); }
+    if (sfpN > 0) {
+      const rows = clamp(sfpRows || 1, 1, sfpN);
+      groups.push(skin === 'fiber'
+        ? { kind: 'lc', count: sfpN, rows, label: 'LC', numbering: 'seq' }
+        : { kind: 'sfp', count: sfpN, rows, label: 'SFP', numbering: numbering(rows) });
+    }
+    const height = Math.max(1, ...groups.map((g) => Math.ceil(g.rows / 2)));
+    return { id: uid('dev'), rackId: null, u: 1, height, name, skin, template: 'csv', groups, notes: '', portInfo: {} };
+  }
+
+  // Turn a port cell ("12", "Gi1/0/12", "SFP 2", "Port 49") into a port key.
+  // Numbers past the Ethernet ports continue into the SFP ports, the way
+  // switches number their uplinks (on a 48 + 4 switch, port 49 is SFP 1).
+  function csvPortKey(dev, text) {
+    const n = +((String(text).match(/\d+/g) || []).pop() || 0);
+    if (!n) return null;
+    const eth = dev.groups.findIndex((g) => g.kind === 'rj45');
+    const sfp = dev.groups.findIndex((g) => g.kind === 'sfp' || g.kind === 'lc');
+    const ethCount = eth >= 0 ? dev.groups[eth].count : 0;
+    if (/sfp|lc|fib/i.test(text) && sfp >= 0) return n <= dev.groups[sfp].count ? portKey(dev.id, sfp, n - 1) : null;
+    if (eth >= 0 && n <= ethCount) return portKey(dev.id, eth, n - 1);
+    if (sfp >= 0 && n - ethCount <= dev.groups[sfp].count) return portKey(dev.id, sfp, n - ethCount - 1);
+    return null;
+  }
+
+  function csvToRack(rows) {
+    const warnings = [];
+    const cell = (r, c) => String(rows[r]?.[c] ?? '').trim();
+    const num = (v) => { const n = parseInt(String(v).replace(/[^\d]/g, ''), 10); return Number.isFinite(n) && n > 0 ? Math.min(n, 400) : 0; };
+
+    // Devices from column I, in rack order. Patch panels, fiber panels and
+    // switches are each numbered in that order; for patch panels and
+    // switches that number is what a bare "2" in column A or D refers to.
+    const order = [];
+    const counters = { patch: [], fiber: [], switch: [] };
+    const byName = new Map();
+    const seen = new Map();
+    const generic = /^(patch\s*panel|fib(er|re)\s*panel|switch)$/i;
+    for (let r = 1; r < rows.length; r++) {
+      const raw = cell(r, CSV_COL.I);
+      if (!raw) continue;
+      const skin = skinFromName(raw);
+      const list = counters[skin];
+      const n = (seen.get(raw.toLowerCase()) || 0) + 1;
+      seen.set(raw.toLowerCase(), n);
+      const name = list && generic.test(raw) ? `${raw} ${list.length + 1}` : n > 1 ? `${raw} ${n}` : raw;
+      const [eth, sfpN] = [num(cell(r, CSV_COL.J)), num(cell(r, CSV_COL.L))];
+      const d = csvDevice(name, eth, num(cell(r, CSV_COL.K)), sfpN, num(cell(r, CSV_COL.M)), skin);
+      const given = skin === 'fiber' ? sfpN : skin === 'patch' ? eth : eth + sfpN;
+      if (!given && portCount(d)) warnings.push(`Row ${r + 1}: no port count for ${name}, so it was given ${portCount(d)} ports.`);
+      order.push(d);
+      if (list) list.push(d);
+      if (!byName.has(name.toLowerCase())) byName.set(name.toLowerCase(), d);
+    }
+
+    // Column A/D reference → device: a number picks the Nth patch panel or
+    // switch (fiber panels are not counted); anything else is a name.
+    const missing = new Map();
+    const resolve = (ref, kind) => (/^\d+$/.test(ref)
+      ? counters[kind][+ref - 1] || null
+      : byName.get(ref.toLowerCase()) || missing.get(ref.toLowerCase())?.dev || null);
+
+    // Cable rows. A row with only A and B filled just lists an unused panel
+    // port and is skipped quietly.
+    const cables = [];
+    for (let r = 1; r < rows.length; r++) {
+      const [pp, ppPort, sw, swPort] = [cell(r, CSV_COL.A), cell(r, CSV_COL.B), cell(r, CSV_COL.D), cell(r, CSV_COL.E)];
+      if (!sw && !swPort) continue;
+      if (!pp || !ppPort || !sw || !swPort) { warnings.push(`Row ${r + 1}: skipped, a cable needs columns A, B, D and E.`); continue; }
+      cables.push({ r, pp, ppPort, sw, swPort });
+      // Names not in column I are created after the listed devices, sized
+      // to the highest port used.
+      for (const [ref, port, kind] of [[pp, ppPort, 'patch'], [sw, swPort, 'switch']]) {
+        if (/^\d+$/.test(ref) || byName.has(ref.toLowerCase())) continue;
+        const m = missing.get(ref.toLowerCase()) || { name: ref, max: 0, kind };
+        m.max = Math.max(m.max, +((port.match(/\d+/g) || []).pop() || 0));
+        missing.set(ref.toLowerCase(), m);
+      }
+    }
+    for (const m of missing.values()) {
+      const count = Math.max(24, Math.ceil(m.max / 24) * 24);
+      const skin = skinFromName(m.name) === 'generic' ? m.kind : skinFromName(m.name);
+      m.dev = csvDevice(m.name, count, 0, 0, 0, skin);
+      order.push(m.dev);
+      warnings.push(`“${m.name}” isn't listed in column I, so it was added at the bottom as a ${count}-port ${skin === 'patch' ? 'patch panel' : skin}.`);
+    }
+
+    const connections = [];
+    const used = new Set();
+    for (const c of cables) {
+      const pd = resolve(c.pp, 'patch');
+      const sd = resolve(c.sw, 'switch');
+      if (!pd) { warnings.push(`Row ${c.r + 1}: there is no patch panel ${c.pp} in column I; cable skipped.`); continue; }
+      if (!sd) { warnings.push(`Row ${c.r + 1}: there is no switch ${c.sw} in column I; cable skipped.`); continue; }
+      const a = csvPortKey(pd, c.ppPort);
+      const b = csvPortKey(sd, c.swPort);
+      if (!a) { warnings.push(`Row ${c.r + 1}: ${pd.name} has no port ${c.ppPort}; cable skipped.`); continue; }
+      if (!b) { warnings.push(`Row ${c.r + 1}: ${sd.name} has no port ${c.swPort}; cable skipped.`); continue; }
+      if (a === b) { warnings.push(`Row ${c.r + 1}: both ends are the same port; cable skipped.`); continue; }
+      const dup = [a, b].find((k) => used.has(k));
+      if (dup) { warnings.push(`Row ${c.r + 1}: ${dup === a ? `${pd.name} port ${c.ppPort}` : `${sd.name} port ${c.swPort}`} already has a cable from an earlier row; skipped.`); continue; }
+      used.add(a); used.add(b);
+      connections.push({ id: uid('c'), a, b, color: ui.color, label: '' });
+    }
+    return { devices: order, connections, warnings, needed: order.reduce((n, d) => n + d.height, 0) };
+  }
+
+  async function importCSV(file) {
+    const rows = parseCSV(await file.text());
+    const res = csvToRack(rows);
+    if (!res.devices.length) { alert('No devices found. Column I (from row 2 down) should list the devices in the rack, top to bottom.'); return; }
+    const warn = res.warnings.length
+      ? `<p class="warn-list">${res.warnings.length} note${res.warnings.length === 1 ? '' : 's'}:</p><ul class="warn-list">${res.warnings.slice(0, 40).map((w) => `<li>${esc(w)}</li>`).join('')}${res.warnings.length > 40 ? `<li>…and ${res.warnings.length - 40} more</li>` : ''}</ul>` : '';
+    const list = res.devices.map((d) => `<li>${esc(d.name)} <span class="muted">${d.height}U · ${portCount(d)} ports</span></li>`).join('');
+    const v = await formDialog({
+      title: 'Build rack from CSV', ok: 'Create rack',
+      note: `<p>${res.devices.length} devices (${res.needed}U) and ${res.connections.length} cables, placed top to bottom in this order:</p><ul>${list}</ul>${warn}`,
+      fields: [
+        { name: 'name', label: 'Rack name', value: file.name.replace(/\.[^.]+$/, ''), required: true },
+        { name: 'units', label: `Height (U, at least ${res.needed})`, type: 'number', value: Math.max(42, res.needed), min: res.needed, max: 100, required: true },
+      ],
+    });
+    if (!v) return;
+    const units = clamp(v.units | 0, res.needed, 100);
+    if (res.needed > 100) { alert(`These devices need ${res.needed}U, more than the 100U maximum for one rack.`); return; }
+    const rack = { id: uid('rack'), name: v.name.trim() || 'Imported rack', units };
+    let top = units;
+    for (const d of res.devices) { d.rackId = rack.id; d.u = top - d.height + 1; top -= d.height; }
+    ui.pending = ui.conn = ui.device = null; ui.multi = [];
+    commit(() => {
+      state.racks.push(rack);
+      state.devices.push(...res.devices);
+      state.connections.push(...res.connections);
+    });
+    requestAnimationFrame(() => $('#workspace').scrollTo({ left: $('#workspace').scrollWidth, behavior: 'smooth' }));
+  }
+
+  // ------------------------------------------------------------------
   // Dialog helper
   // ------------------------------------------------------------------
-  function formDialog({ title, fields, ok = 'Save' }) {
+  // `note` is optional trusted HTML shown above the fields.
+  function formDialog({ title, fields, ok = 'Save', note = '' }) {
     return new Promise((resolve) => {
       const dlg = $('#dlg');
       $('#dlg-title').textContent = title;
       $('#dlg-ok').textContent = ok;
-      $('#dlg-fields').innerHTML = fields.map((f) => {
+      $('#dlg-fields').innerHTML = (note ? `<div class="dlg-note">${note}</div>` : '') + fields.map((f) => {
         const cls = `field${f.wide ? ' wide' : ''}`;
         if (f.type === 'select') {
           return `<label class="${cls}">${esc(f.label)}<select name="${f.name}">${f.options.map((o) => `<option value="${esc(o.value)}"${o.value === f.value ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
@@ -1164,6 +1371,12 @@
       } catch (err) {
         alert(`Could not import: ${err.message}`);
       }
+    });
+    $('#file-csv').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      try { await importCSV(file); } catch (err) { alert(`Could not import the CSV: ${err.message}`); }
     });
     $('#cable-mode').addEventListener('click', (e) => {
       const b = e.target.closest('button[data-mode]');
