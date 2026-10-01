@@ -11,9 +11,10 @@ It runs in a single small container, saves automatically, and needs no database.
 ## What it can do
 
 - **Racks:** build as many racks as you need, 1–100U each, and drag them into any order.
-- **Equipment:** drag switches, patch and fibre panels, routers, firewalls, servers, storage, PDUs, UPSs and accessories into racks, or define your own custom devices.
+- **Equipment:** drag switches, patch and fibre panels, routers, firewalls, servers, storage, PDUs, UPSs and accessories into racks, or define your own custom devices (rename them any time with ✎). Includes 1U and 2U shelves and a 1U rack monitor. Hold `Ctrl` and click devices to select several, then drag any of them (or press `↑`/`↓`) to move them all together.
+- **Rack details:** click a rack's header or empty space to see its size, usage and notes, and to upload a photo of the real rack. The photo only appears in that panel. Photos are stored as files in `/data/photos` and aren't included in JSON exports or Google Drive sync.
 - **Cables:** click two ports to connect them, in the same rack or across racks. Give each cable a colour and a label or ID.
-- **Tracing:** click either end of a cable to highlight it and make the other end pulse. Hold `Ctrl` and click ports to see several cables at once.
+- **Tracing:** click either end of a cable to highlight it and make the other end pulse. Hold `Ctrl` and click ports to see several cables at once, then pick a color to recolor them all together.
 - **Loop detection:** a switch cabled into itself, or two switches joined by more than one link, glows red with a warning. This includes loops through patch panels.
 - **Network settings:** record a VLAN, IP address and subnet on every port of an active device.
 - **Port details:** write free-text notes on any port.
@@ -161,11 +162,28 @@ The screen has three columns: the **equipment palette** (left), the **racks** (c
 - A rack's **Edit** button renames or resizes it. You can't shrink it below installed equipment. **Delete** removes the rack along with its devices and their cables.
 - U numbers on the rails count from U1 at the bottom, like a real rack.
 
+#### Rack details and photo
+**Click a rack's header or any empty space in it** to select it. It gets a blue outline and the inspector shows its **Rack** panel:
+- the rack's name (editable), height, space used and free, and how many devices and cables it has
+- **Notes**, for things like the room, who holds the key or which circuit feeds it
+- **Photo**: **Upload photo** picks a picture of the real rack. Click the photo to open it full size in a new tab. **Replace photo** swaps it and **Remove photo** deletes it. **Edit size** opens the same dialog as the rack's **Edit** button.
+
+The photo only appears in the Rack panel, not on the rack drawing. Large pictures are shrunk in the browser to at most 2000px on the long side (JPEG), so a phone photo usually ends up at a few hundred KB. Photos are stored as separate files in `/data/photos`, not inside the layout, so they **aren't included in Export or Google Drive sync**. On another computer opened from Drive, the rack shows a note that its photo file isn't there. See [Backup and restore](#backup-and-restore) to copy them.
+
 ### Equipment
 - **Drag** an item from the palette onto a rack. A **green** outline means it fits and **red** means it overlaps something or sticks out of the rack.
 - **Click** a palette item to drop it into the first free slot.
 - **Drag a placed device** to move it within a rack or to another rack. Its cables stay connected.
 - **Click a device body** to open it in the inspector. From there you can rename it, add notes (serial, asset tag, IP), change its port layout, list its connections, duplicate it or delete it.
+- **`↑` / `↓`** move the selected device up or down 1U, as long as the space is free.
+
+#### Moving several devices together
+Hold `Ctrl` (`Cmd` on a Mac) and click devices that are already in racks.
+- Each selected device gets a blue outline, and the inspector lists them with their rack and U position. Click a row to scroll to that device, or its **×** to remove it from the selection.
+- **Drag any one of them** and the whole group moves, keeping its spacing. The outline covers the whole group and is **green** if everything fits or **red** if any device would overlap something outside the group or leave the rack.
+- If all the selected devices are in one rack, you can drag the group into another rack. If they're in different racks, each one moves up or down by the same amount within its own rack.
+- **`↑` / `↓`** move the whole group 1U at a time. Nothing moves if any device in the group is blocked.
+- A single **Undo** reverts the whole move. `Ctrl`+click a selected device to remove it from the group. A normal click, `Esc` or **Clear selection** ends the selection.
 
 ![The Device panel for a core switch, showing notes, port layout and its list of connections](docs/screenshots/device.png)
 
@@ -175,11 +193,13 @@ Built-in equipment:
 |---|---|
 | Patching | Patch panel 24 (1U), Patch panel 48 (2U), Fibre panel 24 LC |
 | Network | Switch 24 + 4 SFP, Switch 48 + 4 SFP, Aggregation 24 SFP+, Router, Firewall |
-| Compute | Server 1U / 2U / 4U (NIC, SFP, MGMT and PSU ports), KVM 8-port |
+| Compute | Server 1U / 2U / 4U (NIC, SFP, MGMT and PSU ports), KVM 8-port, Rack monitor 1U (KVM and PSU port) |
 | Storage & Power | Storage array 2U, PDU 12-outlet, UPS 2U |
-| Accessories | Cable manager 1U/2U, shelf 2U, blanking panels 1U/2U |
+| Accessories | Cable manager 1U/2U, shelf 1U/2U, blanking panels 1U/2U |
 
 **Custom devices:** the **+ Custom device…** form sets the name, height, look, and the number of RJ45, SFP, fibre LC and power ports, plus how many **rows** each type is laid out in. Custom devices are saved into the palette as part of the layout.
+
+To **rename a custom device**, click the **✎** next to it in the palette. If devices already placed in racks still have the automatic name (for example *Old Name 3*), the dialog offers to rename them as well (*New Name 3*). Devices you renamed yourself are left alone. **×** removes the custom device from the palette. Copies already in racks stay.
 
 <img src="docs/screenshots/custom-device.png" alt="The Custom device form, with fields for name, height, look, port counts and rows" width="720">
 
@@ -199,6 +219,7 @@ Hold `Ctrl` (`Cmd` on a Mac) and click ports.
 - The right-hand panel lists each selected port, where its cable goes, where it finally ends if it passes through panels, and any VLAN, IP or details. Click a row to jump to its other end, or its **×** to remove it.
 - `Ctrl`+click a selected port again to remove it. A normal click, `Esc` or **Clear selection** ends the multi-selection.
 - If a port is already selected with a normal click, `Ctrl`+clicking another port adds both.
+- **Recolour them all at once:** when any selected port has a cable, the panel shows **Color of N selected cables**. Click a colour to apply it to every one of those cables. A cable with both ends selected counts once, and a single **Undo** reverts the change.
 
 ![Four ports selected with Ctrl+click in two racks, with their cables highlighted and listed in the side panel](docs/screenshots/multi-select.png)
 
@@ -311,7 +332,7 @@ In Excel, use **File → Save As → CSV (Comma delimited)**. Semicolon- and tab
 - **Export / Import**: back up or restore the whole layout as a JSON file.
 - **Undo**: `Ctrl+Z`, up to 150 steps.
 - **Zoom**: the −/+ buttons, or `Ctrl` + mouse wheel.
-- **Keyboard**: `Esc` clears the selection, `Delete` removes the selected cable or device, and `[` / `]` hide or show the left / right panel.
+- **Keyboard**: `Esc` clears the selection, `Delete` removes the selected cable or device, `↑` / `↓` move the selected device(s) 1U, and `[` / `]` hide or show the left / right panel.
 - **Autosave**: every change is saved to the server within half a second. The indicator in the top right shows *Saved*. If the server can't be reached, changes are kept in the browser and the indicator says so.
 
 ---
@@ -319,13 +340,16 @@ In Excel, use **File → Save As → CSV (Comma delimited)**. Semicolon- and tab
 ## Backup and restore
 
 - **From the UI:** use **Export**, and later **Import**.
-- **From the host:** the layout is a single file, `/data/layout.json`.
+- **From the host:** the layout is a single file, `/data/layout.json`. Rack photos are in `/data/photos/<rackId>.jpg`. Export/Import doesn't include photos, so copy that folder too.
 
 ```bash
 # back up
 docker cp networkplanner:/data/layout.json ./layout-backup.json
+docker cp networkplanner:/data/photos ./photos-backup
 # restore
-docker cp ./layout-backup.json networkplanner:/data/layout.json && docker restart networkplanner
+docker cp ./layout-backup.json networkplanner:/data/layout.json
+docker cp ./photos-backup/. networkplanner:/data/photos/
+docker restart networkplanner
 ```
 
 ---
@@ -336,6 +360,9 @@ docker cp ./layout-backup.json networkplanner:/data/layout.json && docker restar
 |---|---|---|
 | `GET` | `/api/layout` | Returns the saved layout JSON (`204` if nothing has been saved yet). |
 | `PUT` | `/api/layout` | Replaces the layout. The body must be JSON with `racks` and `devices` arrays. Max 20 MB. |
+| `GET` | `/api/photos/<rackId>` | Returns the rack's photo as JPEG (`404` if it has none). |
+| `PUT` | `/api/photos/<rackId>` | Stores the rack's photo. The body must be a JPEG. Max 15 MB. |
+| `DELETE` | `/api/photos/<rackId>` | Removes the rack's photo. |
 | `GET` | `/api/config` | Returns `{ "googleClientId": "…" }` (empty when Drive sync is off). |
 | `GET` | `/healthz` | Returns `ok`. Used by the container health check. |
 
@@ -344,7 +371,11 @@ docker cp ./layout-backup.json networkplanner:/data/layout.json && docker restar
 ```jsonc
 {
   "version": 1,
-  "racks":   [{ "id": "rack_x", "name": "Rack A", "units": 42 }],
+  "racks":   [{
+    "id": "rack_x", "name": "Rack A", "units": 42,
+    "notes": "Room 104",   // optional
+    "photo": "mupv9i5s"    // optional: version of /api/photos/rack_x, changes on each upload
+  }],
   "devices": [{
     "id": "dev_y", "rackId": "rack_x", "name": "Switch 1",
     "u": 40,            // lowest rack unit the device occupies (U1 = bottom)

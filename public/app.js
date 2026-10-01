@@ -14,7 +14,8 @@
  *            with a localStorage copy as an offline fallback).
  *
  * DATA MODEL (what is saved in layout.json)
- *   racks[]       { id, name, units }                 units = rack height in U
+ *   racks[]       { id, name, units, notes?, photo? }  units = rack height in U;
+ *                 photo = version token of /api/photos/<id> (the image is a separate file)
  *   devices[]     { id, rackId, u, height, name, skin, template, notes, groups[], portInfo }
  *                   portInfo = { "<groupIndex>:<portIndex>": { vlan, ip, subnet, details, rearNote } }
  *                   u      = lowest rack unit the device occupies (U1 = bottom)
@@ -46,7 +47,7 @@
   // ------------------------------------------------------------------
   const UPX = 44; // pixels per rack unit (must match --u in CSS)
   const COLORS = ['#3b82f6', '#facc15', '#22c55e', '#ef4444', '#f97316', '#a855f7', '#ec4899', '#14b8a6', '#e5e7eb', '#6b7280'];
-  const SKINS = ['server', 'switch', 'patch', 'fiber', 'router', 'firewall', 'storage', 'power', 'kvm', 'generic', 'blank'];
+  const SKINS = ['server', 'switch', 'patch', 'fiber', 'router', 'firewall', 'storage', 'power', 'kvm', 'monitor', 'shelf', 'generic', 'blank'];
 
   // Port-group builders used by the catalogue below.
   const rj = (count, rows = 1, label = '', numbering = 'seq') => ({ kind: 'rj45', count, rows, label, numbering });
@@ -69,11 +70,13 @@
     { type: 'server2', cat: 'Compute', name: 'Server 2U', base: 'Server', height: 2, skin: 'server', groups: [rj(4, 1, 'NIC'), sfp(2), rj(1, 1, 'MGMT'), pwr(2)] },
     { type: 'server4', cat: 'Compute', name: 'Server 4U', base: 'Server', height: 4, skin: 'server', groups: [rj(4, 1, 'NIC'), sfp(4), rj(1, 1, 'MGMT'), pwr(2)] },
     { type: 'kvm', cat: 'Compute', name: 'KVM 8-port', base: 'KVM', height: 1, skin: 'kvm', groups: [rj(8, 1, 'KVM'), rj(1, 1, 'LAN')] },
+    { type: 'monitor', cat: 'Compute', name: 'Rack Monitor 1U', base: 'Monitor', height: 1, skin: 'monitor', groups: [rj(1, 1, 'KVM'), pwr(1)] },
     { type: 'storage', cat: 'Storage & Power', name: 'Storage Array 2U', base: 'Storage', height: 2, skin: 'storage', groups: [sfp(4, 1, 'SAN'), rj(2, 1, 'MGMT'), pwr(2)] },
     { type: 'pdu', cat: 'Storage & Power', name: 'PDU 12 outlet', base: 'PDU', height: 1, skin: 'power', groups: [pwr(12, 'OUT')] },
     { type: 'ups', cat: 'Storage & Power', name: 'UPS 2U', base: 'UPS', height: 2, skin: 'power', groups: [pwr(6, 'OUT'), rj(1, 1, 'NET')] },
     { type: 'cm1', cat: 'Accessories', name: 'Cable Manager 1U', base: 'Cable Manager', height: 1, skin: 'cablemgmt', groups: [] },
     { type: 'cm2', cat: 'Accessories', name: 'Cable Manager 2U', base: 'Cable Manager', height: 2, skin: 'cablemgmt', groups: [] },
+    { type: 'shelf1', cat: 'Accessories', name: 'Shelf 1U', base: 'Shelf', height: 1, skin: 'shelf', groups: [] },
     { type: 'shelf', cat: 'Accessories', name: 'Shelf 2U', base: 'Shelf', height: 2, skin: 'shelf', groups: [] },
     { type: 'blank1', cat: 'Accessories', name: 'Blanking Panel 1U', base: 'Blank', height: 1, skin: 'blank', groups: [] },
     { type: 'blank2', cat: 'Accessories', name: 'Blanking Panel 2U', base: 'Blank', height: 2, skin: 'blank', groups: [] },
@@ -88,7 +91,9 @@
   let state = null;
   const idx = { dev: new Map(), rack: new Map(), conn: new Map(), byPort: new Map(), rear: new Map(), portEl: new Map() };
   // multi = port keys picked with Ctrl+click, shown together with their cables.
-  const ui = { pending: null, conn: null, origin: null, device: null, multi: [], peek: null, mode: 'all', color: COLORS[0], zoom: 1 };
+  // devs = device ids picked with Ctrl+click, moved together.
+  // rack = rack whose details (notes, photo) are shown in the right panel.
+  const ui = { pending: null, conn: null, origin: null, device: null, multi: [], devs: [], rack: null, peek: null, mode: 'all', color: COLORS[0], zoom: 1 };
   const undoStack = [];
   let drag = null;
   let editing = false;
@@ -315,7 +320,8 @@
     const rackIds = new Set();
     for (const r of Array.isArray(s.racks) ? s.racks : []) {
       if (!r || !r.id) continue;
-      out.racks.push({ id: String(r.id), name: String(r.name || 'Rack'), units: clamp(parseInt(r.units, 10) || 42, 1, 100) });
+      out.racks.push({ id: String(r.id), name: String(r.name || 'Rack'), units: clamp(parseInt(r.units, 10) || 42, 1, 100),
+        ...(r.notes ? { notes: String(r.notes) } : {}), ...(r.photo ? { photo: String(r.photo) } : {}) });
       rackIds.add(String(r.id));
     }
     const devs = new Map();
@@ -368,14 +374,32 @@
     if (ui.device && !idx.dev.has(ui.device)) ui.device = null;
     if (ui.pending && !idx.dev.has(parseKey(ui.pending).devId)) ui.pending = null;
     ui.multi = ui.multi.filter((k) => idx.dev.has(parseKey(k).devId));
+    ui.devs = ui.devs.filter((id) => idx.dev.has(id));
+    if (ui.rack && !idx.rack.has(ui.rack)) ui.rack = null;
   }
 
   // True if a device `h` units tall can sit with its bottom at `u` in `rack`
-  // without leaving the rack or overlapping another device (except ignoreId,
-  // the device being moved).
-  function fits(rack, u, h, ignoreId) {
+  // without leaving the rack or overlapping another device (except `ignore`:
+  // the id of the device being moved, or a Set of ids for a group move).
+  function fits(rack, u, h, ignore) {
     if (u < 1 || u + h - 1 > rack.units) return false;
-    return !state.devices.some((d) => d.rackId === rack.id && d.id !== ignoreId && u <= d.u + d.height - 1 && d.u <= u + h - 1);
+    const skip = (id) => (ignore instanceof Set ? ignore.has(id) : id === ignore);
+    return !state.devices.some((d) => d.rackId === rack.id && !skip(d.id) && u <= d.u + d.height - 1 && d.u <= u + h - 1);
+  }
+
+  // Where each device of a Ctrl+click group lands when moved `delta` units
+  // (positive = up). If they all share a rack and `rackId` is given, the group
+  // moves into that rack; otherwise each stays in its own rack. Returns null
+  // if any of them would leave its rack or overlap a device outside the group.
+  function groupMove(ids, delta, rackId) {
+    const devs = ids.map((id) => idx.dev.get(id)).filter(Boolean);
+    const oneRack = devs.every((d) => d.rackId === devs[0].rackId);
+    const ignore = new Set(ids);
+    const moves = devs.map((d) => ({ dev: d, rack: idx.rack.get(oneRack && rackId ? rackId : d.rackId), u: d.u + delta }));
+    return moves.every((m) => fits(m.rack, m.u, m.dev.height, ignore)) ? moves : null;
+  }
+  function applyGroupMove(moves) {
+    commit(() => { for (const m of moves) { const d = idx.dev.get(m.dev.id); d.rackId = m.rack.id; d.u = m.u; } });
   }
   function findFreeSlot(h, preferRackId) {
     const racks = [...state.racks].sort((a, b) => (b.id === preferRackId) - (a.id === preferRackId));
@@ -466,7 +490,7 @@
         html += `<div class="pal-item" draggable="true" data-tpl="${esc(t.type)}" title="Drag into a rack">
           <div class="pal-thumb skin-${esc(t.skin)}" style="height:${Math.min(t.height, 4) * 9 + 4}px"></div>
           <div><div class="pal-name">${esc(t.name)}</div><div class="pal-meta">${t.height}U${ports ? ` · ${ports} ports` : ''}</div></div>
-          ${cat === 'Custom' ? `<button class="pal-del" data-del-tpl="${esc(t.type)}" title="Remove from palette">×</button>` : ''}
+          ${cat === 'Custom' ? `<button class="pal-edit" data-edit-tpl="${esc(t.type)}" title="Rename">✎</button><button class="pal-del" data-del-tpl="${esc(t.type)}" title="Remove from palette">×</button>` : ''}
         </div>`;
       }
       if (cat === 'Custom') html += '<button class="btn small" id="btn-custom" style="width:100%">+ Custom device…</button>';
@@ -638,6 +662,8 @@
       const dev = idx.dev.get(ui.device);
       if (isPassive(dev)) hlRears = state.rearLinks.filter((l) => parseKey(l.a).devId === dev.id || parseKey(l.b).devId === dev.id).map((l) => [l.a, l.b]);
     }
+    for (const id of ui.devs) mark(devEl(id), 'selected');
+    if (ui.rack) mark(document.querySelector(`.rack[data-rack="${ui.rack}"]`), 'rack-selected');
     requestAnimationFrame(drawCables);
     if (opts.inspector !== false) renderInspector();
   }
@@ -807,6 +833,20 @@
       ${linked.length ? '<div class="row"><button class="btn small" data-act="rear-clear">Clear rear links</button></div>' : ''}`;
   }
 
+  // The distinct cables attached to the Ctrl+click selection (a cable with both
+  // ends selected counts once).
+  function multiCables() {
+    return [...new Set(ui.multi.map((k) => idx.byPort.get(k)).filter(Boolean))];
+  }
+  // Swatches that recolor every selected cable at once. The current color is
+  // marked only when all of them already share it.
+  function multiColorHTML() {
+    const cables = multiCables();
+    if (!cables.length) return '';
+    const same = cables.every((mc) => mc.color === cables[0].color) ? cables[0].color : null;
+    return `<div class="field">Color of ${cables.length} selected cable${cables.length === 1 ? '' : 's'}<div class="swatches">${swatchesHTML(same, 'data-multicolor')}</div></div>`;
+  }
+
   // Right-hand panel. Shows, in priority order: the pending port while a cable
   // is being made, the selected connection, the selected device, or the overview.
   function renderInspector() {
@@ -847,6 +887,21 @@
       el.innerHTML = `<div class="insp"><h3>${ui.multi.length} port${ui.multi.length === 1 ? '' : 's'} selected</h3>
         <p class="hint">Ctrl+click ports to add or remove them. Click a row to jump to its other end. <kbd>Esc</kbd> clears.</p>
         <ul class="conn-list multi-list">${rows}</ul>
+        ${multiColorHTML()}
+        <div class="row"><button class="btn small" data-act="multi-clear">Clear selection</button></div></div>`;
+      return;
+    }
+
+    if (ui.devs.length) {
+      const devs = ui.devs.map((id) => idx.dev.get(id)).sort((a, b) => a.rackId.localeCompare(b.rackId) || b.u - a.u);
+      const rows = devs.map((d) => {
+        const range = d.height > 1 ? `U${d.u}–${d.u + d.height - 1}` : `U${d.u}`;
+        return `<li data-mdev="${d.id}" title="Click to scroll to it"><span class="m-body"><b>${esc(d.name)}</b> <span class="muted">${esc(idx.rack.get(d.rackId)?.name)} · ${range}</span></span>
+          <button class="m-x" data-undev="${d.id}" title="Remove from selection">×</button></li>`;
+      }).join('');
+      el.innerHTML = `<div class="insp"><h3>${devs.length} device${devs.length === 1 ? '' : 's'} selected</h3>
+        <p class="hint">Ctrl+click devices to add or remove them. Drag any of them to move them all together, or press <kbd>↑</kbd> / <kbd>↓</kbd> to move them 1U. <kbd>Esc</kbd> clears.</p>
+        <ul class="conn-list multi-list">${rows}</ul>
         <div class="row"><button class="btn small" data-act="multi-clear">Clear selection</button></div></div>`;
       return;
     }
@@ -871,6 +926,33 @@
         <label class="field">Cable label / ID<input data-f="label" value="${esc(c.label)}" placeholder="e.g. CAB-0142"></label>
         <div class="field">Color<div class="swatches">${swatchesHTML(c.color, 'data-conncolor')}</div></div>
         <div class="row"><button class="btn danger" data-act="del-conn">Disconnect</button></div></div>`;
+      return;
+    }
+
+    const rk = ui.rack && idx.rack.get(ui.rack);
+    if (rk) {
+      const devs = state.devices.filter((d) => d.rackId === rk.id);
+      const used = devs.reduce((n, d) => n + d.height, 0);
+      const ids = new Set(devs.map((d) => d.id));
+      const cables = state.connections.filter((x) => ids.has(parseKey(x.a).devId) || ids.has(parseKey(x.b).devId)).length;
+      // The photo lives in its own file on the server and is only loaded here.
+      const src = rk.photo && `api/photos/${encodeURIComponent(rk.id)}?v=${encodeURIComponent(rk.photo)}`;
+      el.innerHTML = `<div class="insp" data-scope="rack"><h3>Rack</h3>
+        <label class="field">Name<input data-f="name" value="${esc(rk.name)}"></label>
+        <div class="kv"><span>Height</span><b>${rk.units}U</b><span>Used</span><b>${used}U (${rk.units - used}U free)</b>
+          <span>Devices</span><b>${devs.length}</b><span>Cables</span><b>${cables}</b></div>
+        <label class="field">Notes<textarea data-f="notes" placeholder="Location, room, key holder, circuit…">${esc(rk.notes)}</textarea></label>
+        <h4>Photo</h4>
+        ${src ? `<div class="rack-photo">
+            <a href="${src}" target="_blank" rel="noopener" title="Open full size"><img src="${src}" alt="Photo of ${esc(rk.name)}" onerror="this.closest('.rack-photo').classList.add('missing')"></a>
+            <p class="hint photo-missing">The photo file couldn't be found on the server. Upload it again.</p>
+          </div>` : '<p class="hint">No photo yet. Upload one to see what the real rack looks like.</p>'}
+        <input type="file" accept="image/*" data-rack-photo hidden>
+        <div class="row">
+          <button class="btn small" data-act="rack-photo">${src ? 'Replace photo' : 'Upload photo'}</button>
+          ${src ? '<button class="btn small danger" data-act="rack-photo-del">Remove photo</button>' : ''}
+          <button class="btn small" data-act="rack-edit">Edit size</button>
+        </div></div>`;
       return;
     }
 
@@ -918,11 +1000,12 @@
         <li>Click a port, then click another port to connect them with a cable.</li>
         <li>Click any connected port to highlight the other end.</li>
         <li>Click any port to add details. On a patch panel you can also set where its rear goes, even to another rack.</li>
-        <li>Hold <kbd>Ctrl</kbd> and click ports to see several cables at once.</li>
+        <li>Hold <kbd>Ctrl</kbd> and click ports to see several cables at once, and recolor them together.</li>
+        <li>Click a rack's header or empty space to see its details, notes and photo.</li>
         <li>Cables that form a network loop pulse red, and a warning appears at the top.</li>
         <li>Click a device body to rename it, add notes or delete it.</li>
       </ol>
-      <p><kbd>Esc</kbd> clear selection · <kbd>Del</kbd> delete selected · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+scroll zoom</p>
+      <p><kbd>Esc</kbd> clear selection · <kbd>Del</kbd> delete selected · <kbd>↑</kbd>/<kbd>↓</kbd> move selected device(s) 1U · <kbd>Ctrl</kbd>+click devices to move several together · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+scroll zoom</p>
       <h4>All connections</h4>
       ${conns ? `<ul class="conn-list">${conns}</ul><div class="row"><button class="btn small" data-act="csv">Download CSV</button></div>` : '<p>No cables yet.</p>'}
     </div>`;
@@ -932,8 +1015,8 @@
   // Actions
   // ------------------------------------------------------------------
   function clearSelection() {
-    if (!ui.pending && !ui.conn && !ui.device && !ui.multi.length) return;
-    ui.pending = null; ui.conn = null; ui.origin = null; ui.device = null; ui.multi = [];
+    if (!ui.pending && !ui.conn && !ui.device && !ui.multi.length && !ui.devs.length && !ui.rack) return;
+    ui.pending = null; ui.conn = null; ui.origin = null; ui.device = null; ui.multi = []; ui.devs = []; ui.rack = null;
     updateHighlights();
   }
 
@@ -949,11 +1032,11 @@
       const seed = ui.conn ? ui.origin : ui.pending;
       if (!ui.multi.length && seed && seed !== key) ui.multi = [seed];
       ui.multi = ui.multi.includes(key) ? ui.multi.filter((k) => k !== key) : [...ui.multi, key];
-      ui.pending = null; ui.conn = null; ui.origin = null; ui.device = null;
+      ui.pending = null; ui.conn = null; ui.origin = null; ui.device = null; ui.devs = []; ui.rack = null;
       updateHighlights();
       return;
     }
-    ui.multi = [];
+    ui.multi = []; ui.devs = []; ui.rack = null;
     const existing = idx.byPort.get(key);
     if (existing) {
       ui.pending = null; ui.device = null; ui.conn = existing.id; ui.origin = key;
@@ -978,7 +1061,7 @@
 
   function addFromTemplate(tpl, rackId, u) {
     const d = newDevice(tpl, rackId, u);
-    ui.device = d.id; ui.conn = null; ui.pending = null;
+    ui.device = d.id; ui.conn = null; ui.pending = null; ui.multi = []; ui.devs = []; ui.rack = null;
     commit(() => state.devices.push(d));
   }
 
@@ -1017,6 +1100,38 @@
     const needed = Math.max(0, ...state.devices.filter((d) => d.rackId === id).map((d) => d.u + d.height - 1));
     if (units < needed) { alert(`Can't shrink to ${units}U: equipment is installed up to U${needed}. Move it down first.`); return; }
     commit(() => { rack.name = v.name.trim() || rack.name; rack.units = units; });
+  }
+
+  // Rack photos. The browser shrinks the picture to at most 2000px on its long
+  // side as a JPEG (a phone photo becomes a few hundred KB), uploads it to
+  // /api/photos/<rackId>, then stores a version token on the rack so the
+  // details panel loads the new file. The image itself never goes into the
+  // layout JSON, so it isn't part of exports or Google Drive sync.
+  async function uploadRackPhoto(rackId, file) {
+    const btn = $('#inspector [data-act="rack-photo"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
+    try {
+      const img = await createImageBitmap(file);
+      const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      img.close();
+      const blob = await new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.85));
+      const r = await fetch(`api/photos/${encodeURIComponent(rackId)}`, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+      if (!r.ok) throw new Error(`the server answered ${r.status}`);
+      commit(() => { const rack = idx.rack.get(rackId); if (rack) rack.photo = Date.now().toString(36); });
+    } catch (err) {
+      alert(`Couldn't upload the photo: ${err.message || 'that file doesn\'t look like an image'}.`);
+      renderInspector();
+    }
+  }
+
+  async function removeRackPhoto(rackId) {
+    if (!confirm('Remove this rack\'s photo?')) return;
+    try { await fetch(`api/photos/${encodeURIComponent(rackId)}`, { method: 'DELETE' }); } catch { /* offline: just forget it */ }
+    commit(() => { const rack = idx.rack.get(rackId); if (rack) delete rack.photo; });
   }
 
   function deleteRack(id) {
@@ -1059,6 +1174,33 @@
     const name = v.name.trim() || 'Custom';
     const tpl = { type: uid('custom'), cat: 'Custom', name, base: name, height, skin: v.skin, groups };
     commit(() => { state.custom = state.custom || []; state.custom.push(tpl); });
+    renderPalette();
+  }
+
+  // Rename a custom palette device. Placed copies still named after the old
+  // name ("Old Name 3") can be renamed along with it; ones you renamed by hand
+  // are left alone.
+  async function renameCustomDevice(type) {
+    const tpl = (state.custom || []).find((t) => t.type === type);
+    if (!tpl) return;
+    const oldBase = tpl.base || tpl.name;
+    const auto = new RegExp(`^${oldBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( \\d+)?$`);
+    const placed = state.devices.filter((d) => d.template === type && auto.test(d.name));
+    const v = await formDialog({
+      title: 'Rename custom device', ok: 'Rename',
+      fields: [
+        { name: 'name', label: 'Name', value: tpl.name, required: true, wide: true },
+        ...(placed.length ? [{ name: 'placed', label: `Also rename the ${placed.length} placed in racks`, type: 'select', value: 'yes', wide: true,
+          options: [{ value: 'yes', label: `Yes (“${oldBase} 1” → “New name 1”)` }, { value: 'no', label: 'No, only the palette' }] }] : []),
+      ],
+    });
+    const name = v && v.name.trim();
+    if (!name) return;
+    commit(() => {
+      const t = state.custom.find((x) => x.type === type);
+      t.name = name; t.base = name;
+      if (v.placed === 'yes') for (const p of placed) { const d = idx.dev.get(p.id); d.name = name + d.name.slice(oldBase.length); }
+    });
     renderPalette();
   }
 
@@ -1282,7 +1424,7 @@
     const rack = { id: uid('rack'), name: v.name.trim() || 'Imported rack', units };
     let top = units;
     for (const d of res.devices) { d.rackId = rack.id; d.u = top - d.height + 1; top -= d.height; }
-    ui.pending = ui.conn = ui.device = null; ui.multi = [];
+    ui.pending = ui.conn = ui.device = null; ui.multi = []; ui.devs = []; ui.rack = null;
     commit(() => {
       state.racks.push(rack);
       state.devices.push(...res.devices);
@@ -1486,7 +1628,7 @@
   // it's saved to this server and can be undone, but isn't re-uploaded.
   function applyDriveLayout(remote, file, msg) {
     drive.applying = true;
-    ui.pending = ui.conn = ui.device = null; ui.multi = [];
+    ui.pending = ui.conn = ui.device = null; ui.multi = []; ui.devs = []; ui.rack = null;
     try { commit(() => { state = remote; }); } finally { drive.applying = false; }
     renderPalette();
     drive.fileId = file.id;
@@ -1654,7 +1796,7 @@
       try {
         const data = sanitize(JSON.parse(await file.text()));
         if (!confirm(`Replace the current layout with "${file.name}" (${data.racks.length} racks, ${data.devices.length} devices, ${data.connections.length} cables)? You can undo this.`)) return;
-        ui.pending = ui.conn = ui.device = null;
+        ui.pending = ui.conn = ui.device = null; ui.rack = null;
         commit(() => { state = data; });
         renderPalette();
       } catch (err) {
@@ -1708,6 +1850,8 @@
     // Palette
     $('#palette').addEventListener('click', (e) => {
       if (e.target.closest('#btn-custom')) return addCustomDevice();
+      const ren = e.target.closest('[data-edit-tpl]');
+      if (ren) { e.stopPropagation(); renameCustomDevice(ren.dataset.editTpl); return; }
       const del = e.target.closest('[data-del-tpl]');
       if (del) {
         e.stopPropagation();
@@ -1731,10 +1875,23 @@
       const port = e.target.closest('.port');
       if (port) { onPortClick(port.dataset.p, e.ctrlKey || e.metaKey); return; }
       const dev = e.target.closest('.device');
-      if (dev) { ui.device = dev.dataset.dev; ui.conn = null; ui.origin = null; ui.pending = null; ui.multi = []; updateHighlights(); }
+      if (dev && (e.ctrlKey || e.metaKey)) {
+        // Ctrl+click adds/removes the device in the group (a device already
+        // selected the normal way joins it).
+        const id = dev.dataset.dev;
+        if (!ui.devs.length && ui.device && ui.device !== id) ui.devs = [ui.device];
+        ui.devs = ui.devs.includes(id) ? ui.devs.filter((x) => x !== id) : [...ui.devs, id];
+        ui.device = null; ui.conn = null; ui.origin = null; ui.pending = null; ui.multi = []; ui.rack = null;
+        updateHighlights();
+        return;
+      }
+      if (dev) { ui.device = dev.dataset.dev; ui.conn = null; ui.origin = null; ui.pending = null; ui.multi = []; ui.devs = []; ui.rack = null; updateHighlights(); return; }
+      // Anywhere else on a rack (header, rails, empty space) → its details.
+      const rackEl = e.target.closest('.rack');
+      if (rackEl) { clearSelection(); ui.rack = rackEl.dataset.rack; updateHighlights(); }
     });
     $('#workspace').addEventListener('click', (e) => {
-      if (!e.target.closest('.device, .port, [data-act], .rack-head')) clearSelection();
+      if (!e.target.closest('.device, .port, [data-act], .rack')) clearSelection();
     });
 
     // Hovering a connected port outlines its far end
@@ -1769,6 +1926,8 @@
         const dev = idx.dev.get(devEl.dataset.dev);
         const r = devEl.getBoundingClientRect();
         drag = { dev, height: dev.height, grab: (e.clientY - r.top) / ui.zoom, el: devEl };
+        // Dragging one device of a Ctrl+click group moves the whole group.
+        if (ui.devs.length > 1 && ui.devs.includes(dev.id)) drag.group = [...ui.devs];
         setTimeout(() => devEl.classList.add('dragging'), 0);
       }
       e.dataTransfer.effectAllowed = 'copyMove';
@@ -1811,6 +1970,21 @@
       const h = drag.height;
       const topU = rack.units - Math.round((y - drag.grab) / UPX);
       const u = clamp(topU - h + 1, 1, Math.max(1, rack.units - h + 1));
+      if (drag.group) {
+        // The ghost spans every group member that lands in this rack.
+        const moves = groupMove(drag.group, u - drag.dev.u, rack.id);
+        const here = (moves || drag.group.map((id) => ({ dev: idx.dev.get(id), rack, u: idx.dev.get(id).u + u - drag.dev.u })))
+          .filter((m) => m.rack.id === rack.id);
+        const lo = Math.max(1, Math.min(...here.map((m) => m.u)));
+        const hi = Math.min(rack.units, Math.max(...here.map((m) => m.u + m.dev.height - 1)));
+        ghost.hidden = !here.length;
+        ghost.classList.toggle('bad', !moves);
+        ghost.style.top = `${(rack.units - hi) * UPX}px`;
+        ghost.style.height = `${Math.max(1, hi - lo + 1) * UPX}px`;
+        if (moves) drag.target = { moves };
+        e.dataTransfer.dropEffect = moves ? 'move' : 'none';
+        return;
+      }
       const ok = h <= rack.units && fits(rack, u, h, drag.dev?.id);
       ghost.hidden = false;
       ghost.classList.toggle('bad', !ok);
@@ -1837,8 +2011,9 @@
       const d = drag;
       hideGhosts();
       if (!t) return;
+      if (t.moves) { applyGroupMove(t.moves); return; }
       if (d.dev) {
-        ui.device = d.dev.id;
+        ui.device = d.dev.id; ui.devs = []; ui.rack = null;
         commit(() => { const dev = idx.dev.get(d.dev.id); dev.rackId = t.rack.id; dev.u = t.u; });
       } else {
         addFromTemplate(d.tpl, t.rack.id, t.u);
@@ -1871,7 +2046,8 @@
       const f = e.target.dataset.f;
       if (!f) return;
       if (!editing) { pushUndo(); editing = true; }
-      const target = e.target.closest('[data-scope="conn"]') ? idx.conn.get(ui.conn) : idx.dev.get(ui.device);
+      const scope = e.target.closest('[data-scope]')?.dataset.scope;
+      const target = scope === 'conn' ? idx.conn.get(ui.conn) : scope === 'rack' ? idx.rack.get(ui.rack) : idx.dev.get(ui.device);
       if (!target) return;
       target[f] = e.target.value;
       renderRacks({ inspector: false });
@@ -1879,6 +2055,11 @@
     });
     // Port-group layout edits (rows / numbering) — port identities are unchanged, so cables survive
     insp.addEventListener('change', (e) => {
+      if (e.target.matches('[data-rack-photo]')) {
+        const file = e.target.files[0];
+        if (file && ui.rack) uploadRackPhoto(ui.rack, file);
+        return;
+      }
       // Rear connection pickers. Choosing a panel links to the same port
       // number on it if that's free, otherwise its first free port.
       const ds = e.target.dataset;
@@ -1919,7 +2100,7 @@
         if (!slot) { alert(`No free ${src.height}U space available.`); return; }
         // IPs must be unique, so a duplicate starts with no network settings.
         const copy = { ...clone(src), id: uid('dev'), rackId: slot.rack.id, u: slot.u, name: `${src.name} (copy)`, portInfo: {} };
-        ui.device = copy.id;
+        ui.device = copy.id; ui.rack = null;
         commit(() => state.devices.push(copy));
         return;
       }
@@ -1935,6 +2116,15 @@
       }
       if (act === 'rear-clear' && ui.device) { const id = ui.device; commit(() => removeDeviceRear(id)); return; }
       if (act === 'multi-clear') { clearSelection(); return; }
+      if (act === 'rack-edit' && ui.rack) { editRack(ui.rack); return; }
+      if (act === 'rack-photo') { insp.querySelector('[data-rack-photo]')?.click(); return; }
+      if (act === 'rack-photo-del' && ui.rack) { removeRackPhoto(ui.rack); return; }
+      const msw = e.target.closest('[data-multicolor]');
+      if (msw) { const color = msw.dataset.multicolor; commit(() => { for (const mc of multiCables()) mc.color = color; }); return; }
+      const und = e.target.closest('[data-undev]');
+      if (und) { ui.devs = ui.devs.filter((id) => id !== und.dataset.undev); updateHighlights(); return; }
+      const mdev = e.target.closest('li[data-mdev]');
+      if (mdev) { document.querySelector(`.device[data-dev="${mdev.dataset.mdev}"]`)?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); return; }
       const unm = e.target.closest('[data-unmulti]');
       if (unm) { ui.multi = ui.multi.filter((k) => k !== unm.dataset.unmulti); updateHighlights(); return; }
       const mrow = e.target.closest('li[data-mkey]');
@@ -1958,7 +2148,7 @@
       const li = e.target.closest('li[data-conn]');
       if (li) {
         const cc = idx.conn.get(li.dataset.conn);
-        ui.conn = cc.id; ui.origin = li.dataset.origin; ui.device = null; ui.pending = null; ui.multi = [];
+        ui.conn = cc.id; ui.origin = li.dataset.origin; ui.device = null; ui.pending = null; ui.multi = []; ui.devs = []; ui.rack = null;
         updateHighlights();
         scrollToPort(otherEnd(cc, li.dataset.origin));
       }
@@ -1975,6 +2165,12 @@
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (ui.conn) { const id = ui.conn; ui.conn = null; commit(() => { state.connections = state.connections.filter((x) => x.id !== id); }); }
         else if (ui.device) deleteDevice(ui.device);
+      }
+      // ↑ / ↓ nudge the selected device(s) 1U, as long as they all still fit.
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && (ui.devs.length || ui.device)) {
+        e.preventDefault();
+        const moves = groupMove(ui.devs.length ? ui.devs : [ui.device], e.key === 'ArrowUp' ? 1 : -1);
+        if (moves) applyGroupMove(moves);
       }
     });
 

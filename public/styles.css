@@ -163,6 +163,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer;
 }
 .pal-del:hover { background: #3a1c1c; color: #fca5a5; }
+.pal-edit {
+  position: absolute; right: 28px; top: 6px; width: 20px; height: 20px;
+  border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer;
+}
+.pal-edit:hover { background: var(--line); color: var(--text); }
+.pal-item:has(.pal-edit) { padding-right: 52px; }
 
 /* ---------- Rack ---------- */
 .rack { flex: none; position: relative; }
@@ -189,6 +195,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border: 1px solid #353d48; border-radius: 7px;
   box-shadow: 0 18px 40px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.05);
 }
+.rack.rack-selected .rack-frame { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 18px 40px rgba(0,0,0,.5); }
+.rack.rack-selected .rack-name { color: var(--accent-2); }
 .rail { width: 34px; display: flex; flex-direction: column; background: #2c323b; }
 .rail:first-child { border-right: 1px solid #1a1e24; }
 .rail:last-child { border-left: 1px solid #1a1e24; }
@@ -267,6 +275,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .skin-storage  { background: linear-gradient(#2f6158, #21453e); }
 .skin-power    { background: linear-gradient(#6e5a24, #4b3d18); }
 .skin-kvm      { background: linear-gradient(#3e4a3a, #2b3428); }
+/* Rack monitor: a dark bezel around a dim blue screen. */
+.skin-monitor  { background: linear-gradient(90deg, #22272e 0 14%, #13283b 14% 86%, #22272e 86%); }
 .skin-cablemgmt { background: repeating-linear-gradient(90deg, #15181c 0 14px, #2a2f37 14px 18px); }
 .skin-blank    { background: linear-gradient(#23272d, #1b1e23); }
 .skin-shelf    { background: linear-gradient(#1c2026, #1c2026 70%, #3a414c 70%, #2a2f37); }
@@ -364,6 +374,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .field input:focus, .field textarea:focus, .field select:focus { outline: none; border-color: var(--accent); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin-bottom: 14px; font-size: 12.5px; }
 .kv span { color: var(--muted); }
+/* Rack details: the photo only loads in this panel. Click it for full size. */
+.rack-photo img { display: block; width: 100%; max-height: 420px; object-fit: contain; background: #0d1014; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; }
+.rack-photo .photo-missing { display: none; }
+.rack-photo.missing img { display: none; }
+.rack-photo.missing .photo-missing { display: block; color: #fca5a5; }
 .glayout { display: grid; grid-template-columns: 1fr 58px 1.3fr; gap: 6px 8px; align-items: center; margin-bottom: 14px; font-size: 12px; }
 .glayout .gl-head { color: var(--muted); font-size: 11px; }
 .glayout .muted { color: var(--muted); }
